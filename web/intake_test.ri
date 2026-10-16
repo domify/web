@@ -9,19 +9,21 @@ import web/spec::*
 STEPS = [1, 2, 3, 7, 64, 4096]
 
 # Feeds *wire* to an intake *step* bytes at a time, as reads would bring it,
-# and answers the first thing `take` gives back.
+# and answers the first thing `take` gives back. An intake's bytes are on
+# the tape, as the server's are.
 def feed(wire : String, step : Int32, max_body : Int32 = 1024) : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
-  intake = Intake.new("", max_body)
-  at = 0
-  while at < wire.bytesize
-    size = step < wire.bytesize - at ? step : wire.bytesize - at
-    intake.append(wire[at, size])
-    at = at + size
-    if taken = intake.take
-      return taken
+  result = nil.as(Tuple(Request, String, Bool) | ParseError | TooLarge | Nil)
+  Tape.scope do
+    intake = Intake.new("", max_body)
+    at = 0
+    while at < wire.bytesize && result.nil?
+      size = step < wire.bytesize - at ? step : wire.bytesize - at
+      intake.append(wire[at, size])
+      at = at + size
+      result = intake.take
     end
   end
-  nil
+  result
 end
 
 def taken(wire : String, step : Int32, max_body : Int32 = 1024) : Tuple(Request, String, Bool)
@@ -114,24 +116,26 @@ describe "Intake" do
   end
 
   it "asks for a body the client holds back for 100 Continue, once" do
-    intake = Intake.new("", 1024)
-    intake.append("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n")
-    assert intake.take.nil?
-    assert intake.continue_due?
-    assert !intake.continue_due?
-    intake.append("abc")
-    assert intake.take.is_a?(Tuple(Request, String, Bool))
+    Tape.scope do
+      intake = Intake.new("", 1024)
+      intake.append("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n")
+      assert intake.take.nil?
+      assert intake.continue_due?
+      assert !intake.continue_due?
+      intake.append("abc")
+      assert intake.take.is_a?(Tuple(Request, String, Bool))
 
-    old = Intake.new("POST /e HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n", 1024)
-    assert old.take.nil?
-    assert !old.continue_due?
+      old = Intake.new("POST /e HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n", 1024)
+      assert old.take.nil?
+      assert !old.continue_due?
 
-    empty = Intake.new("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 0\r\n\r\n", 1024)
-    assert empty.take.is_a?(Tuple(Request, String, Bool))
-    assert !empty.continue_due?
+      empty = Intake.new("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 0\r\n\r\n", 1024)
+      assert empty.take.is_a?(Tuple(Request, String, Bool))
+      assert !empty.continue_due?
 
-    refused = Intake.new("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2000\r\n\r\n", 1024)
-    assert refused.take.is_a?(TooLarge)
-    assert !refused.continue_due?
+      refused = Intake.new("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2000\r\n\r\n", 1024)
+      assert refused.take.is_a?(TooLarge)
+      assert !refused.continue_due?
+    end
   end
 end

@@ -13,6 +13,11 @@
 # The framing is read from the head the way `std/http` reads it, and what
 # it cannot agree on is refused rather than guessed at: two
 # `Content-Length`s that differ, or more than one `Transfer-Encoding`.
+#
+# The bytes are on the tape of the request's `Tape.scope`, read into it
+# straight from the socket, and the framing is read from them in place:
+# until the parser runs, a request costs the collector nothing. What leaves
+# - the `Request`, the bytes after it - is copied out as heap strings.
 module web/intake
 
 import std/http::{HTTP}
@@ -34,9 +39,10 @@ TRAILERS   = 3
 pub struct TooLarge
 end
 
-pub class Intake
-  @bytes : ByteBuffer
-  @body : ByteBuffer
+@[OnTape]
+pub struct Intake
+  @bytes : TapeWriter
+  @body : TapeWriter
   @max_body : Int32
   @searched : Int32
   @head_end : Int32
@@ -49,8 +55,8 @@ pub class Intake
 
   # *leftover* is what the connection's last request left unread.
   def initialize(leftover : String, @max_body : Int32)
-    @bytes = ByteBuffer.new(leftover.bytesize < 4096 ? 4096 : leftover.bytesize)
-    @body = ByteBuffer.new(64)
+    @bytes = TapeWriter.new(leftover.bytesize < 4096 ? 4096 : leftover.bytesize)
+    @body = TapeWriter.new(64)
     @searched = 0
     @head_end = -1
     @need = -1
@@ -66,9 +72,13 @@ pub class Intake
     @bytes.append(chunk.to_unsafe, chunk.bytesize)
   end
 
+  pub def append(bytes : Pointer(UInt8), count : Int32) : Nil
+    @bytes.append(bytes, count)
+  end
+
   # No byte of a request has arrived.
   pub def empty? : Bool
-    @bytes.size == 0
+    @bytes.length == 0
   end
 
   # True once, when the head asked for `100 Continue` and has been read
@@ -85,7 +95,7 @@ pub class Intake
   pub def take : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
     if @head_end < 0
       unless find_head_end
-        return ParseError.new("request headers past #{MAX_HEAD} bytes") if @bytes.size > MAX_HEAD
+        return ParseError.new("request headers past #{MAX_HEAD} bytes") if @bytes.length > MAX_HEAD
         return nil
       end
       refused = read_framing
@@ -95,8 +105,8 @@ pub class Intake
   end
 
   private def take_sized : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
-    return nil if @bytes.size < @need
-    text = @bytes.to_s(0, @bytes.size)
+    return nil if @bytes.length < @need
+    text = copy(@bytes, 0, @bytes.length)
     incoming = parse_incoming(text)
     if req = incoming.request
       return TooLarge.new if req.body.bytesize > @max_body
@@ -106,7 +116,7 @@ pub class Intake
       return ParseError.new(reason)
     end
     # The parser wants more than the framing said: let it decide from here.
-    @need = @bytes.size + 1
+    @need = @bytes.length + 1
     nil
   end
 
@@ -121,9 +131,9 @@ pub class Intake
     in Int32
       # The head is parsed with an empty chunked body after it, so the
       # parser checks it as it would any; the body is the one decoded here.
-      incoming = parse_incoming(@bytes.to_s(0, @head_end + 4) + "0\r\n\r\n")
+      incoming = parse_incoming(copy(@bytes, 0, @head_end + 4) + "0\r\n\r\n")
       if req = incoming.request
-        return {with_body(req, @body.to_s(0, @body.size)), @bytes.to_s(ended, @bytes.size - ended), incoming.close}
+        return {with_body(req, copy(@body, 0, @body.length)), copy(@bytes, ended, @bytes.length - ended), incoming.close}
       end
       ParseError.new(incoming.error || "incomplete request")
     end
@@ -132,8 +142,8 @@ pub class Intake
   # Looks for the blank line that ends the head in what arrived since the
   # last look; true once it is there.
   private def find_head_end : Bool
-    p = @bytes.pointer
-    n = @bytes.size
+    p = @bytes.finish.to_unsafe
+    n = @bytes.length
     i = @searched > 3 ? @searched - 3 : 0
     while i + 3 < n
       if p[i] == 13_u8 && p[i + 1] == 10_u8 && p[i + 2] == 13_u8 && p[i + 3] == 10_u8
@@ -148,24 +158,35 @@ pub class Intake
 
   private def read_framing : ParseError | TooLarge | Nil
     body_start = @head_end + 4
-    lines = HTTP.split_crlf(@bytes.to_s(0, @head_end))
+    p = @bytes.finish.to_unsafe
     lengths = [] of String
     encodings = [] of String
     expects = false
-    index = 1
-    while index < lines.size
-      line = lines[index]
-      index = index + 1
-      colon = line.index(':')
-      next unless colon
-      name = line[0, colon]
-      value = HTTP.trim(line[colon + 1, line.bytesize - colon - 1])
-      lengths << value if HTTP.same_name?(name, "Content-Length")
-      encodings << value if HTTP.same_name?(name, "Transfer-Encoding")
-      expects = true if HTTP.same_name?(name, "Expect") && HTTP.same_name?(value, "100-continue")
+    # The request line, then a field per line; a line without a colon is
+    # the parser's to refuse.
+    line_end = find_crlf(0) || @head_end
+    first_line_end = line_end
+    at = line_end + 2
+    while at < @head_end
+      line_end = find_crlf(at) || @head_end
+      line_end = @head_end if line_end > @head_end
+      colon = at
+      while colon < line_end && p[colon] != 58_u8
+        colon = colon + 1
+      end
+      if colon < line_end
+        if field?(at, colon, "Content-Length")
+          lengths << value_at(colon + 1, line_end)
+        elsif field?(at, colon, "Transfer-Encoding")
+          encodings << value_at(colon + 1, line_end)
+        elsif field?(at, colon, "Expect")
+          expects = true if HTTP.same_name?(value_at(colon + 1, line_end), "100-continue")
+        end
+      end
+      at = line_end + 2
     end
     # An HTTP/1.0 client does not know the interim answer.
-    expects = false unless lines.size > 0 && lines[0].ends_with?(" HTTP/1.1")
+    expects = false unless ends_with?(first_line_end, " HTTP/1.1")
 
     return ParseError.new("more than one Transfer-Encoding") if encodings.size > 1
     if encodings.size == 1
@@ -197,8 +218,8 @@ pub class Intake
   # Decodes what has arrived of a chunked body into `@body`: the index just
   # past the body's end once it has all arrived, nil until then.
   private def decode_chunks : Int32 | ParseError | TooLarge | Nil
-    p = @bytes.pointer
-    n = @bytes.size
+    p = @bytes.finish.to_unsafe
+    n = @bytes.length
     while @scan < n
       if @state == SIZE_LINE
         line_end = find_crlf(@scan)
@@ -208,7 +229,7 @@ pub class Intake
         end
         size = chunk_size(@scan, line_end)
         return ParseError.new("not a chunk size") if size < 0
-        return TooLarge.new if @body.size.to_i64 + size > @max_body.to_i64
+        return TooLarge.new if @body.length.to_i64 + size > @max_body.to_i64
         @scan = line_end + 2
         if size == 0
           @state = TRAILERS
@@ -245,7 +266,7 @@ pub class Intake
   # extensions and blanks; -1 when it is not hexadecimal. Eight digits at
   # most, which is more than any body the server takes.
   private def chunk_size(from : Int32, to : Int32) : Int64
-    p = @bytes.pointer
+    p = @bytes.finish.to_unsafe
     last = from
     while last < to && p[last] != 59_u8
       last = last + 1
@@ -279,8 +300,8 @@ pub class Intake
   end
 
   private def find_crlf(from : Int32) : Int32?
-    p = @bytes.pointer
-    n = @bytes.size
+    p = @bytes.finish.to_unsafe
+    n = @bytes.length
     i = from
     while i + 1 < n
       return i if p[i] == 13_u8 && p[i + 1] == 10_u8
@@ -288,45 +309,51 @@ pub class Intake
     end
     nil
   end
-end
 
-# Bytes that grow by doubling, so appending n bytes costs O(n) in all.
-class ByteBuffer
-  @pointer : Pointer(UInt8)
-  @capacity : Int32
-  @size : Int32
-
-  def initialize(capacity : Int32)
-    @capacity = capacity < 16 ? 16 : capacity
-    @pointer = Pointer(UInt8).malloc(@capacity.to_u64)
-    @size = 0
-  end
-
-  def pointer : Pointer(UInt8)
-    @pointer
-  end
-
-  def size : Int32
-    @size
-  end
-
-  def append(bytes : Pointer(UInt8), count : Int32) : Nil
-    return if count <= 0
-    needed = @size + count
-    if needed > @capacity
-      grown = @capacity * 2
-      while grown < needed
-        grown = grown * 2
-      end
-      @pointer = @pointer.realloc(grown.to_u64)
-      @capacity = grown
+  # True when the field name between *from* and *to* is *name*, in any
+  # case, as `std/http` compares names.
+  private def field?(from : Int32, to : Int32, name : String) : Bool
+    return false unless to - from == name.bytesize
+    p = @bytes.finish.to_unsafe
+    n = name.to_unsafe
+    i = 0
+    while i < name.bytesize
+      a = p[from + i]
+      b = n[i]
+      a = a + 32_u8 if a >= 65_u8 && a <= 90_u8
+      b = b + 32_u8 if b >= 65_u8 && b <= 90_u8
+      return false unless a == b
+      i = i + 1
     end
-    (@pointer + @size).copy_from(bytes, count)
-    @size = needed
+    true
   end
 
-  def to_s(from : Int32, count : Int32) : String
-    source = @pointer + from
+  # The field value between *from* and *to*, without the blanks around it.
+  private def value_at(from : Int32, to : Int32) : String
+    p = @bytes.finish.to_unsafe
+    while from < to && (p[from] == 32_u8 || p[from] == 9_u8)
+      from = from + 1
+    end
+    while to > from && (p[to - 1] == 32_u8 || p[to - 1] == 9_u8)
+      to = to - 1
+    end
+    copy(@bytes, from, to - from)
+  end
+
+  private def ends_with?(to : Int32, suffix : String) : Bool
+    return false if to < suffix.bytesize
+    p = @bytes.finish.to_unsafe + (to - suffix.bytesize)
+    n = suffix.to_unsafe
+    i = 0
+    while i < suffix.bytesize
+      return false unless p[i] == n[i]
+      i = i + 1
+    end
+    true
+  end
+
+  private def copy(buffer : TapeWriter, from : Int32, count : Int32) : String
+    source = buffer.finish.to_unsafe + from
     String.new(count) do |target|
       target.copy_from(source, count)
     end

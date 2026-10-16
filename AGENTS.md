@@ -13,10 +13,12 @@ bench/run.sh 5        # requests per second and peak RSS, --release
 
 ## Rules
 
-- Tape only where it pays: the buffered response is serialised onto the
-  tape (`Response#write_http`, `Server#send`). Keep other per-request data
-  on the heap unless a benchmark, run interleaved against the heap version,
-  shows a clear gain; put the numbers in the README's "Memory" section.
+- Tape only where it pays. Each request has a `Tape.scope`
+  (`Server#serve_connection`), opened after its first bytes are read so an
+  idle connection holds no tape; `Intake` and `Response#write_http` use it.
+  Move more onto the tape only when a benchmark, run interleaved against
+  the current version, shows a clear gain, and put the numbers in the
+  README's "Memory" section.
 - Every line is at most 80 characters in documents and commit messages.
 
 ## Commits

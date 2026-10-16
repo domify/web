@@ -45,6 +45,9 @@ import web/response::{Response}
 import web/config::{Config}
 import web/http_date::*
 
+# What one read off a connection takes, onto the connection's stack.
+READ_SIZE = 16384
+
 pub class Server
   @handler : Handler
   @config : Config
@@ -264,30 +267,93 @@ pub class Server
     outcome.is_a?(Panicked) ? outcome : nil
   end
 
+  # Each request runs inside its own `Tape.scope`: its bytes as they are
+  # read, and its response as it is written, are on the tape and are gone
+  # together when the response is out. The scope opens once the request's
+  # first bytes are in, read onto the stack: a connection waiting for its
+  # next request holds no tape.
   private def serve_connection(conn : Connection, exchange : Exchange) : Nil
     client = conn.socket
     leftover = ""
     requests = 0
+    chunk = uninitialized UInt8[READ_SIZE]
+    start = pointerof(chunk).as(UInt8*)
     loop do
-      parsed = read_request(conn, leftover, requests == 0)
-      case parsed
-      in Closed
-        return
-      in ParseError
-        write_error(client, 400, "Bad Request")
-        return
-      in TooLarge
-        write_error(client, 413, "Content Too Large")
-        return
-      in TimedOut
-        write_error(client, 408, "Request Timeout")
-        return
-      in Tuple(Request, String, Bool)
-        leftover = it[1]
-        keepalive = wants_keepalive?(it[2], requests)
-        return unless dispatch(client, it[0], leftover, keepalive, exchange)
-        requests = requests + 1
+      count = 0
+      if leftover.empty?
+        case got = await_request(conn, requests == 0, start)
+        in Closed
+          return
+        in TimedOut
+          write_error(client, 408, "Request Timeout")
+          return
+        in Int32
+          count = got
+        end
       end
+      done = false
+      Tape.scope do
+        if rest = serve_request(conn, client, leftover, start, count, requests, exchange)
+          leftover = rest
+        else
+          done = true
+        end
+      end
+      return if done
+      requests = requests + 1
+    end
+  end
+
+  # Waits for a request's first bytes and reads them into *into*: a
+  # connection's first request has `read_timeout` from the accept, a later
+  # one `idle_timeout`. Either is just `Closed` when nothing came.
+  private def await_request(conn : Connection, first : Bool, into : Pointer(UInt8)) : Int32 | Closed | TimedOut
+    client = conn.socket
+    return Closed.new if client.closed?
+    wait = milliseconds(@config.read_timeout)
+    if !first
+      return Closed.new if @draining
+      wait = milliseconds(@config.idle_timeout)
+    elsif limit = wait
+      left = limit.to_i64 - elapsed_ms(conn.accepted)
+      return Closed.new if left <= 0
+      wait = left.to_i32
+    end
+    wait = 0 if @draining
+    client.read_timeout_ms = wait
+    conn.idle = true
+    got = client.read(into, READ_SIZE)
+    conn.idle = false
+    case got
+    in Cancelled
+      Closed.new
+    in SocketError
+      Closed.new
+    in Int32
+      got == 0 ? Closed.new : got
+    end
+  end
+
+  # One request off *conn*, read and answered: *count* bytes of it are
+  # already at *start*. When the connection may carry another, what the
+  # client sent after this one; nil otherwise.
+  private def serve_request(conn : Connection, client : IyiSocket, leftover : String, start : Pointer(UInt8), count : Int32, requests : Int32, exchange : Exchange) : String?
+    parsed = read_request(conn, leftover, start, count, requests == 0)
+    case parsed
+    in Closed
+      nil
+    in ParseError
+      write_error(client, 400, "Bad Request")
+      nil
+    in TooLarge
+      write_error(client, 413, "Content Too Large")
+      nil
+    in TimedOut
+      write_error(client, 408, "Request Timeout")
+      nil
+    in Tuple(Request, String, Bool)
+      keepalive = wants_keepalive?(it[2], requests)
+      dispatch(client, it[0], it[1], keepalive, exchange) ? it[1] : nil
     end
   end
 
@@ -424,9 +490,10 @@ pub class Server
   # for that first byte; a connection that sent nothing is just `Closed`.
   # While the server drains, a keep-alive connection takes no further
   # request, and a new one only the request it has already sent.
-  private def read_request(conn : Connection, leftover : String, first : Bool) : Tuple(Request, String, Bool) | ParseError | TooLarge | TimedOut | Closed
+  private def read_request(conn : Connection, leftover : String, start : Pointer(UInt8), count : Int32, first : Bool) : Tuple(Request, String, Bool) | ParseError | TooLarge | TimedOut | Closed
     client = conn.socket
     intake = Intake.new(leftover, @config.max_request_body_size)
+    intake.append(start, count) if count > 0
     limit = milliseconds(@config.read_timeout)
     since = first ? conn.accepted : Time.monotonic
     loop do
@@ -455,19 +522,21 @@ pub class Server
       wait = 0 if waiting && @draining
       client.read_timeout_ms = wait
       conn.idle = waiting
-      chunk = client.read(65536)
+      # Read on the stack and appended to the tape: a read costs no heap
+      # string.
+      got = client.read(start, READ_SIZE)
       conn.idle = false
-      case chunk
+      case got
       in Cancelled
         return Closed.new
       in SocketError
-        return TimedOut.new if chunk.timed_out? && !waiting
+        return TimedOut.new if got.timed_out? && !waiting
         return Closed.new
-      in String
-        return Closed.new if chunk.empty? && waiting
-        return ParseError.new("connection closed mid-headers") if chunk.empty?
+      in Int32
+        return Closed.new if got == 0 && waiting
+        return ParseError.new("connection closed mid-headers") if got == 0
         since = Time.monotonic if waiting && !first
-        intake.append(chunk)
+        intake.append(start, got)
       end
     end
   end

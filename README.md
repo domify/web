@@ -1002,25 +1002,32 @@ runs the example test.
 
 ## Memory
 
-Each request's objects - the request, its context and parameters, the
-response a handler writes - are ordinary objects on the garbage-collected
-heap: they are fields of classes, which tape memory may not be.
+A request lives in its own `Tape.scope`, from its first bytes to the last
+byte of its response:
 
-What does use tape is the response on its way out. The server writes the
-status line, the headers and the body of a buffered response into a
-`TapeWriter` inside a `Tape.scope`, sends those bytes in one write and drops
-them when the scope ends. Before, every response was a new heap string with
-a copy of its body. `bench/run.sh`, 64 keep-alive connections with `ab`,
-median of five interleaved runs, 16-core Linux, 2026-10-16:
+- The connection waits for the request on its stack, with no tape: an idle
+  keep-alive connection holds none.
+- The bytes are read onto the tape, and the framing (`Content-Length`,
+  `Transfer-Encoding`, `Expect`) is read from them in place.
+- The handler runs on heap objects, as before. The request, its context and
+  parameters and the response it writes are classes that application code
+  keeps and changes, and tape memory may not be a class's field. The parser
+  in `std/http` makes them from one heap copy of the request.
+- The status line, the headers and the body of a buffered response are
+  written onto the tape and sent in one write.
 
-| | heap strings | tape | |
+All of it goes when the scope ends. `bench/run.sh`, 64 keep-alive
+connections with `ab`, median of seven interleaved runs, 16-core Linux,
+2026-10-16:
+
+| | heap only | response on tape | request on tape |
 |---|---|---|---|
-| `/`, 12 bytes | 43,654 req/s | 44,720 req/s | +2%, within noise |
-| `/page`, 40 KB | 31,756 req/s | 34,650 req/s | +9% |
-| Peak RSS | 12.4 MB | 10.8 MB | -13% |
+| `/`, 12 bytes | 42,961 req/s | 44,604 req/s | 47,477 req/s (+10.5%) |
+| `/page`, 40 KB | 30,325 req/s | 33,687 req/s | 35,982 req/s (+19%) |
+| Peak RSS | 12.5 MB | 10.6 MB | 11.6 MB (-7%) |
 
-`Response#to_http` returns the same bytes as a `String`, for tests and code
-that keeps them.
+`Response#to_http` returns a response's bytes as a `String`, for tests and
+code that keeps them.
 
 ## Development
 
