@@ -1,11 +1,13 @@
-# iyi-web
+# web
 
-The web framework for [iyi](https://iyi-lang.com).
+A web framework for [ris](https://github.com/rislang/ris), ported from
+[iyi-web](https://github.com/sdogruyol/iyi-web). The git history keeps the
+original authors and the iyi code it started from.
 
-```iyi
+```ris
 module app
 
-import web/iyi_web/dsl::*
+import web/web/dsl::*
 
 get "/" do |env|
   "Hello, world!"
@@ -14,7 +16,7 @@ end
 run
 ```
 
-iyi-web serves HTTP/1.1 from native iyi programs. Routes are blocks,
+web serves HTTP/1.1 from native ris programs. Routes are blocks,
 middleware is a class, and settings live in a single `config` value. The type
 a route returns is checked when the program compiles.
 
@@ -43,80 +45,78 @@ a route returns is checked when the program compiles.
 
 ## Requirements
 
-[iyi](https://iyi-lang.com) 0.15.0 or later: `iyi get`, the `as` short name on
-an `iyi.mod` requirement, and `import X::{...}` - one line for a module and the
-names it brings into scope - arrived in 0.15.0.
+[ris](https://github.com/rislang/ris) 0.1.0 or later.
 
 ## Installation
 
-iyi-web is an iyi module. Add it to your project's `iyi.mod`:
+web is a ris module. Add it to your project's `ris.mod`:
 
 ```sh
-iyi get github.com/sdogruyol/iyi-web
+ris get github.com/domify/web
 ```
 
-This fetches the latest release, records it in `iyi.sum` and writes one line to
-`iyi.mod`:
+This fetches the latest release, records it in `ris.sum` and writes one line to
+`ris.mod`:
 
 ```
-require github.com/sdogruyol/iyi-web v0.1.1
+require github.com/domify/web v0.1.0
 ```
 
-Files then name iyi-web's modules by their full path. One `import` line loads
+Files then name web's modules by their full path. One `import` line loads
 a module and brings its names into scope:
 
-```iyi
-import github.com/sdogruyol/iyi-web/iyi_web/dsl::*
+```ris
+import github.com/domify/web/web/dsl::*
 ```
 
 ### A short name
 
-The examples in this README write the path once, in `iyi.mod`, under the short
-name `web`. Pass `--as web` when adding iyi-web, or run the same command in a
+The examples in this README write the path once, in `ris.mod`, under the short
+name `web`. Pass `--as web` when adding web, or run the same command in a
 project that already requires it:
 
 ```sh
-iyi get github.com/sdogruyol/iyi-web --as web
+ris get github.com/domify/web --as web
 ```
 
 or add ` as web` to the `require` line by hand:
 
 ```
-require github.com/sdogruyol/iyi-web v0.1.1 as web
+require github.com/domify/web v0.1.0 as web
 ```
 
-`web/iyi_web/...` then means `github.com/sdogruyol/iyi-web/iyi_web/...`:
+`web/web/...` then means `github.com/domify/web/web/...`:
 
-```iyi
-import web/iyi_web/dsl::*
-import web/iyi_web/router::{Router}
+```ris
+import web/web/dsl::*
+import web/web/router::{Router}
 ```
 
 ### Versions
 
-`iyi get -u` moves to the latest release and
-`iyi get github.com/sdogruyol/iyi-web@v0.1.1` to a given one; both keep the
-short name. `iyi get -u --check` says whether a newer release exists without
+`ris get -u` moves to the latest release and
+`ris get github.com/domify/web@v0.1.0` to a given one; both keep the
+short name. `ris get -u --check` says whether a newer release exists without
 changing anything.
 
-iyi reads `iyi.mod` from the directory of the file being built, so keep the
-entry file, and every `*_test.iyi` that uses iyi-web, beside it. Modules of
+ris reads `ris.mod` from the directory of the file being built, so keep the
+entry file, and every `*_test.ri` that uses web, beside it. Modules of
 your own can live in subdirectories.
 
 ## Quick start
 
-Start a project, add iyi-web, and save the program at the top of this page as
-`app.iyi`:
+Start a project, add web, and save the program at the top of this page as
+`app.ri`:
 
 ```sh
 mkdir app && cd app
-iyi init app
-iyi get github.com/sdogruyol/iyi-web --as web
-iyi run app.iyi
+ris init app
+ris get github.com/domify/web --as web
+ris run app.ri
 ```
 
-`iyi init` writes `iyi.mod` together with a starter `main.iyi`, `greet.iyi`
-and `main_test.iyi`, which can be deleted.
+`ris init` writes `ris.mod` together with a starter `main.ri`, `greet.ri`
+and `main_test.ri`, which can be deleted.
 
 The server listens on http://localhost:3000. Pass `-p 8080` or set `PORT` to
 use another port.
@@ -126,7 +126,7 @@ The examples below extend this program. Each goes between the `import` line and
 
 ## Routing
 
-```iyi
+```ris
 get "/articles" do |env|
   "All articles"
 end
@@ -172,8 +172,8 @@ that implements `IntoBody`; `String`, `Nil` (an empty body), `Int32`, `Int64`
 and `Bool` do. The check happens at compile time, on the route. Implement
 `IntoBody` to return your own types:
 
-```iyi
-import web/iyi_web/body::{IntoBody}
+```ris
+import web/web/body::{IntoBody}
 
 struct Temperature
   def initialize(@celsius : Int32)
@@ -197,7 +197,7 @@ end
 
 ## Parameters
 
-```iyi
+```ris
 get "/search" do |env|
   term = env.params.query["q"]? || ""
   "Results for " + term
@@ -228,7 +228,7 @@ value, in the order sent, and an empty array when there is none; `body_all`
 covers form and multipart text fields alike. A name is matched as sent, so
 `?tag[]=a&tag[]=b` is `query_all("tag[]")`:
 
-```iyi
+```ris
 get "/posts" do |env|
   tags = env.params.query_all("tag")   # ?tag=iyi&tag=web => ["iyi", "web"]
   "Tagged " + tags.join(", ")
@@ -242,7 +242,7 @@ route runs.
 
 ### File uploads
 
-```iyi
+```ris
 post "/avatar" do |env|
   if upload = env.params.files["avatar"]?
     env.text("Received " + upload.filename + ", " + upload.size.to_s + " bytes")
@@ -270,7 +270,7 @@ A malformed `multipart/form-data` body gets `400`. More file parts than
 `content_type`, `content_length`, `host` and `version`. Header lookups ignore
 case:
 
-```iyi
+```ris
 get "/agent" do |env|
   env.request.headers["User-Agent"]? || "unknown"
 end
@@ -280,7 +280,7 @@ end
 
 Set the status, headers and content type on `env.response`:
 
-```iyi
+```ris
 get "/report.csv" do |env|
   env.response.content_type = "text/csv; charset=utf-8"
   env.response.headers["Cache-Control"] = "no-store"
@@ -309,7 +309,7 @@ a `content_type:` argument:
 `Hash`, an `Array` or a type that implements `ToJSON`. `env.status(code)` sets
 the status and returns `env`, so the two combine:
 
-```iyi
+```ris
 post "/api/items" do |env|
   env.status(201).json({"created" => true})
 end
@@ -320,7 +320,7 @@ end
 `std/json` parses documents with `JSON.parse?` and writes them with
 `JSON.build` or `JSON.to_json`:
 
-```iyi
+```ris
 import std/json::{JSON}
 
 get "/api/items/:id" do |env|
@@ -340,7 +340,7 @@ end
 
 ### Redirects and halting
 
-```iyi
+```ris
 get "/home" do |env|
   env.redirect("/")
 end
@@ -363,7 +363,7 @@ are not applied.
 
 ### Cookies
 
-```iyi
+```ris
 post "/sign-in" do |env|
   env.set_cookie("session", "3f9a1c", http_only: true, secure: true, max_age: 86400, same_site: "Lax")
   env.redirect("/account")
@@ -388,7 +388,7 @@ decoded when read, so any string round-trips. `delete_cookie` needs the same
 
 ### Files
 
-```iyi
+```ris
 get "/download/report" do |env|
   env.send_file("reports/latest.pdf", filename: "report.pdf")
 end
@@ -416,7 +416,7 @@ is being sent ends the connection, so the client sees the body as incomplete.
 `env.response.flush` sends what the route has written so far and keeps the
 response open; on HTTP/1.1 the body is sent chunked.
 
-```iyi
+```ris
 get "/export.csv" do |env|
   env.response.content_type = "text/csv; charset=utf-8"
   env.response.print("id,total\n")
@@ -430,7 +430,7 @@ Headers changed after the first `flush` are not sent.
 
 ### Server-sent events
 
-```iyi
+```ris
 sse "/clock" do |stream, env|
   3.times do |tick|
     stream.send("tick " + tick.to_s, event: "tick", id: tick)
@@ -447,9 +447,9 @@ returns. A browser reads it with `new EventSource("/clock")`.
 
 ### WebSockets
 
-```iyi
-import web/iyi_web/dsl::*
-import web/iyi_web/websocket::{WebSocket}
+```ris
+import web/web/dsl::*
+import web/web/websocket::{WebSocket}
 
 class Room
   @members : Array(WebSocket)
@@ -515,7 +515,7 @@ the list holds `"*"`. A browser connects with
 
 ## Filters
 
-```iyi
+```ris
 before_all do |env|
   env.response.headers["X-Content-Type-Options"] = "nosniff"
 end
@@ -548,7 +548,7 @@ Filters, middleware and routes pass values along a request with `env.set`,
 `env.get` and `env.get?`, which hold a `String`, `Int32`, `Int64`, `Float64`,
 `Bool` or `nil`. `env["key"]` reads and writes strings only:
 
-```iyi
+```ris
 before_all "/account/*" do |env|
   env.set("user_id", 42)
 end
@@ -560,7 +560,7 @@ end
 
 ## Error pages
 
-```iyi
+```ris
 error 404 do |env|
   "<h1>Page not found</h1>"
 end
@@ -592,8 +592,8 @@ the panic message in development and hides it in every other environment;
 
 ## Routers
 
-```iyi
-import web/iyi_web/router::{Router}
+```ris
+import web/web/router::{Router}
 
 admin = Router.new
 
@@ -618,11 +618,11 @@ and `namespace` passes the nested router to its block.
 Larger applications keep routers in their own modules. A module does not need
 the DSL to define one:
 
-```iyi
-# routes/health.iyi
+```ris
+# routes/health.ri
 module routes/health
 
-import web/iyi_web/router::{Router}
+import web/web/router::{Router}
 
 pub def health_routes : Router
   router = Router.new
@@ -633,7 +633,7 @@ pub def health_routes : Router
 end
 ```
 
-```iyi
+```ris
 import routes/health::*
 
 mount health_routes
@@ -644,9 +644,9 @@ mount health_routes
 Requests pass through request logging, static files, the middleware added with
 `use` in the order it was added, and then the router.
 
-```iyi
-import web/iyi_web/cors::{CORSHandler}
-import web/iyi_web/override::{OverrideMethodHandler}
+```ris
+import web/web/cors::{CORSHandler}
+import web/web/override::{OverrideMethodHandler}
 
 gzip true
 use OverrideMethodHandler.new
@@ -660,11 +660,11 @@ before request logging.
 
 | Handler | Module | Purpose |
 |---|---|---|
-| `CompressHandler` | `web/iyi_web/compress` | Compresses textual responses of 860 bytes or more with gzip or deflate when `Accept-Encoding` allows it. `gzip true` adds it. |
-| `CORSHandler` | `web/iyi_web/cors` | Sets `Access-Control-Allow-Origin` and answers preflight requests with `204`. Takes `origin` (default `*`), `methods`, `headers` (default `*`) and `max_age` (seconds as a string, default `"86400"`). |
-| `OverrideMethodHandler` | `web/iyi_web/override` | Treats a form `POST` with `_method` set to `PUT`, `PATCH` or `DELETE` as that method. |
-| `LogHandler` | `web/iyi_web/log` | Writes one line per request to `config.logger`. Added by default; `logging false` removes it. |
-| `StaticHandler` | `web/iyi_web/static` | Serves the public folder. Added by default; `serve_static false` removes it. |
+| `CompressHandler` | `web/web/compress` | Compresses textual responses of 860 bytes or more with gzip or deflate when `Accept-Encoding` allows it. `gzip true` adds it. |
+| `CORSHandler` | `web/web/cors` | Sets `Access-Control-Allow-Origin` and answers preflight requests with `204`. Takes `origin` (default `*`), `methods`, `headers` (default `*`) and `max_age` (seconds as a string, default `"86400"`). |
+| `OverrideMethodHandler` | `web/web/override` | Treats a form `POST` with `_method` set to `PUT`, `PATCH` or `DELETE` as that method. |
+| `LogHandler` | `web/web/log` | Writes one line per request to `config.logger`. Added by default; `logging false` removes it. |
+| `StaticHandler` | `web/web/static` | Serves the public folder. Added by default; `serve_static false` removes it. |
 
 To write your own, subclass `Handler`, override `call`, and pass the request
 on with `call_next`. A handler that does not call `call_next` ends the chain.
@@ -672,9 +672,9 @@ on with `call_next`. A handler that does not call `call_next` ends the chain.
 the filter path syntax; `only_match?` and `exclude_match?` answer for the
 current request:
 
-```iyi
-import web/iyi_web/handler::{Handler}
-import web/iyi_web/context::{Context}
+```ris
+import web/web/handler::{Handler}
+import web/web/context::{Context}
 
 class RequireToken < Handler
   @token : String
@@ -720,7 +720,7 @@ files off. `serve_static({"gzip" => true, "dir_listing" => true})` sets the
 options; a key left out counts as false, and `dir_index` controls the
 `index.html` lookup. `static_headers` runs for every served file:
 
-```iyi
+```ris
 static_headers do |env, path, info|
   env.response.headers["Cache-Control"] = "public, max-age=3600"
 end
@@ -728,7 +728,7 @@ end
 
 ## Templates
 
-```iyi
+```ris
 import std/html::{HTML}
 
 get "/profile/:name" do |env|
@@ -754,8 +754,8 @@ end
 </html>
 ```
 
-Templates use iyi's `.eiy` format: `<%= expr %>` prints a value and
-`<% code %>` runs iyi code. They are compiled into the program, and see the
+Templates use the `.eiy` format: `<%= expr %>` prints a value and
+`<% code %>` runs ris code. They are compiled into the program, and see the
 local variables where `render` is written.
 
 - `render "view.eiy"` returns the rendered text. `render "view.eiy",
@@ -770,8 +770,8 @@ local variables where `render` is written.
 
 ## Configuration
 
-```iyi
-import web/iyi_web/config::*
+```ris
+import web/web/config::*
 
 config.app_name = "storefront"
 config.max_request_body_size = 1024 * 1024
@@ -781,7 +781,7 @@ config.max_request_body_size = 1024 * 1024
 |---|---|---|
 | `host` | `"0.0.0.0"` | `host "127.0.0.1"`, `-b 127.0.0.1` |
 | `port` | `PORT`, else `3000` | `run 8080`, `-p 8080` |
-| `env` | `IYI_WEB_ENV`, else `"development"` | |
+| `env` | `WEB_ENV`, else `"development"` | |
 | `public_folder` | `"./public"` | `public_folder "assets"` |
 | `serve_static` | `true` | `serve_static false` |
 | `logging` | `true` | `logging false` |
@@ -802,7 +802,7 @@ config.max_request_body_size = 1024 * 1024
 | `unix_socket` | `nil` | |
 | `websocket_allowed_origins` | `[] of String` (same-origin) | |
 | `websocket_max_message_size` | `8 * 1024 * 1024` | |
-| `app_name` | `"iyi-web"` | |
+| `app_name` | `"web"` | |
 
 - `max_keepalive_requests` caps the requests served on one connection before
   it is closed.
@@ -816,7 +816,7 @@ config.max_request_body_size = 1024 * 1024
 - `websocket_max_message_size` counts a fragmented message whole.
 - `app_name` and `env` appear in the line printed at startup. With `env` set
   to `test`, `run` binds the port without serving requests.
-- `powered_by true` adds `X-Powered-By: iyi-web` to every response.
+- `powered_by true` adds `X-Powered-By: web` to every response.
 - `unix_socket` is a path to listen at instead of `host` and `port`, for a
   proxy on the same machine: `config.unix_socket = "/run/app.sock"`. The file
   must not exist yet; it is removed when the server stops.
@@ -837,14 +837,14 @@ response has been built; a request whose handler panicked is logged with its
 `config.logger`, standard output by default, and `logging false` silences
 both.
 
-A logger is a subclass of `Logger` from `web/iyi_web/log` with
+A logger is a subclass of `Logger` from `web/web/log` with
 `write(message)`; override `request(ctx, elapsed)` as well to choose what a
 request line holds:
 
-```iyi
+```ris
 import std/time::{Span}
-import web/iyi_web/log::{Logger}
-import web/iyi_web/context::{Context}
+import web/web/log::{Logger}
+import web/web/context::{Context}
 
 class JSONLogger < Logger
   pub def request(ctx : Context, elapsed : Span) : Nil
@@ -874,7 +874,7 @@ bracketed (`-b ::1`, `-b '[::1]'`); `::` takes IPv6 connections only. An
 unknown flag or an invalid port stops the program with the reason and the
 list of flags. `extra_options` adds your own:
 
-```iyi
+```ris
 extra_options do |parser|
   parser.on("--public DIR", "Folder to serve static files from") { |dir| public_folder(dir) }
 end
@@ -897,29 +897,29 @@ With `shutdown_message` on, the stop prints
 ## Deployment
 
 ```sh
-iyi build --release app.iyi -o app
-IYI_WEB_ENV=production ./app -p 8080
+ris build --release app.ri -o app
+WEB_ENV=production ./app -p 8080
 ```
 
-- iyi-web speaks plain HTTP/1.1. Terminate TLS at a reverse proxy such as
+- web speaks plain HTTP/1.1. Terminate TLS at a reverse proxy such as
   nginx, Caddy or HAProxy; it can reach the server over a unix socket
   (`unix_socket`). Keep `idle_timeout` above the proxy's own keep-alive
   timeout, so that the proxy is the one to close an idle connection.
 - A client that disconnects while its response is being written ends that
-  request only; iyi's socket layer reports it as a panic line on standard
+  request only; the socket layer reports it as a panic line on standard
   error.
 
 ## Testing
 
-`web/iyi_web/harness` sends requests through a router in-process, without a
+`web/web/harness` sends requests through a router in-process, without a
 socket:
 
-```iyi
-# health_test.iyi
+```ris
+# health_test.ri
 module health_test
 
-import web/iyi_web/router::{RouteHandler}
-import web/iyi_web/harness::*
+import web/web/router::{RouteHandler}
+import web/web/harness::*
 import routes/health::*
 
 handler = RouteHandler.new(health_routes)
@@ -930,83 +930,105 @@ assert response.body == "ok"
 ```
 
 ```sh
-iyi test
+ris test
 ```
 
-A test is a `*_test.iyi` program that exits non-zero on failure, and
-`iyi test` runs every one in the project. A test that uses iyi-web sits beside
-`iyi.mod`, like the entry file. `http_request` and `form_request` build
+A test is a `*_test.ri` program that exits non-zero on failure, and
+`ris test` runs every one in the project. A test that uses web sits beside
+`ris.mod`, like the entry file. `http_request` and `form_request` build
 requests with a query string, a body or a content type. `handler_chain` from
-`web/iyi_web/dsl` is the whole application as `run` serves it (logging, static
+`web/web/dsl` is the whole application as `run` serves it (logging, static
 files, middleware and routes), for tests that need more than one router.
 
 ## Modules
 
 Paths as written with the short name `web`. Without a short name, a module is
-written with the whole path: `github.com/sdogruyol/iyi-web/iyi_web/dsl`.
+written with the whole path: `github.com/domify/web/web/dsl`.
 
 | Module | Provides |
 |---|---|
-| `web/iyi_web/dsl` | Routes, filters, `error`, `mount`, `use`, `sse`, `ws`, `render`, `run` and the setting shorthands |
-| `web/iyi_web/router` | `Router`, `RouteHandler` |
-| `web/iyi_web/context` | `Context` |
-| `web/iyi_web/request` | `Request` |
-| `web/iyi_web/response` | `Response` |
-| `web/iyi_web/params` | `Params` |
-| `web/iyi_web/multipart` | `FileUpload` and the `multipart/form-data` parser |
-| `web/iyi_web/cookies` | `CookieJar` |
-| `web/iyi_web/headers` | `Headers` |
-| `web/iyi_web/body` | `IntoBody` |
-| `web/iyi_web/handler` | `Handler`, `chain` |
-| `web/iyi_web/config` | `Config`, `config` |
-| `web/iyi_web/cli` | `CLIParser` |
-| `web/iyi_web/event_stream` | `EventStream` |
-| `web/iyi_web/websocket` | `WebSocket`, `Frame`, `FrameError` |
-| `web/iyi_web/templates` | `render`, `content_for`, `yield_content` |
-| `web/iyi_web/compress` | `CompressHandler` and the `Accept-Encoding` helpers |
-| `web/iyi_web/range` | `Range` header parsing and `206` responses |
-| `web/iyi_web/file_body` | `respond_file`, `FILE_CHUNK_SIZE`: a file sent from disk, whole or by range |
-| `web/iyi_web/cors` | `CORSHandler` |
-| `web/iyi_web/override` | `OverrideMethodHandler` |
-| `web/iyi_web/static` | `StaticHandler` |
-| `web/iyi_web/log` | `LogHandler`, `Logger`, `StdoutLogger` |
-| `web/iyi_web/harness` | `http_request`, `form_request`, `dispatch`, `routes` |
+| `web/web/dsl` | Routes, filters, `error`, `mount`, `use`, `sse`, `ws`, `render`, `run` and the setting shorthands |
+| `web/web/router` | `Router`, `RouteHandler` |
+| `web/web/context` | `Context` |
+| `web/web/request` | `Request` |
+| `web/web/response` | `Response` |
+| `web/web/params` | `Params` |
+| `web/web/multipart` | `FileUpload` and the `multipart/form-data` parser |
+| `web/web/cookies` | `CookieJar` |
+| `web/web/headers` | `Headers` |
+| `web/web/body` | `IntoBody` |
+| `web/web/handler` | `Handler`, `chain` |
+| `web/web/config` | `Config`, `config` |
+| `web/web/cli` | `CLIParser` |
+| `web/web/event_stream` | `EventStream` |
+| `web/web/websocket` | `WebSocket`, `Frame`, `FrameError` |
+| `web/web/templates` | `render`, `content_for`, `yield_content` |
+| `web/web/compress` | `CompressHandler` and the `Accept-Encoding` helpers |
+| `web/web/range` | `Range` header parsing and `206` responses |
+| `web/web/file_body` | `respond_file`, `FILE_CHUNK_SIZE`: a file sent from disk, whole or by range |
+| `web/web/cors` | `CORSHandler` |
+| `web/web/override` | `OverrideMethodHandler` |
+| `web/web/static` | `StaticHandler` |
+| `web/web/log` | `LogHandler`, `Logger`, `StdoutLogger` |
+| `web/web/harness` | `http_request`, `form_request`, `dispatch`, `routes` |
 
 ## Examples
 
-`examples/` holds small programs, each on one topic. They import iyi-web by
-its path inside this repository, `iyi_web/dsl` where an application writes
-`web/iyi_web/dsl`, so run them from the repository root; arguments for the
+`examples/` holds small programs, each on one topic. They import web by
+its path inside this repository, `web/dsl` where an application writes
+`web/web/dsl`, so run them from the repository root; arguments for the
 program go after `--`:
 
 ```sh
-iyi run examples/json_api.iyi
-iyi run examples/json_api.iyi -- -p 8080
+ris run examples/json_api.ri
+ris run examples/json_api.ri -- -p 8080
 ```
 
 | Example | Shows |
 |---|---|
-| `hello.iyi` | The smallest application |
-| `json_api.iyi` | CRUD over an in-memory store with `env.json`, `env.params.json`, status codes and `404` via `halt` |
-| `forms_and_uploads.iyi` | Form fields, multipart uploads with limits, and `_method` override |
-| `templates.iyi` | Views in `examples/views/` with a layout, `content_for` and a partial |
-| `routers.iyi` | `Router`, `mount`, `namespace`, router filters and error pages |
-| `middleware.iyi` | A custom `Handler` with `only` and `exclude`, CORS, gzip and static files from `examples/public/` |
-| `streaming_and_sse.iyi` | `flush`, chunked responses and server-sent events |
-| `websocket_chat.iyi` | A chat room over `ws`, broadcasting to every member |
-| `cookies_and_context.iyi` | Cookies, redirects and `env.set` / `env.get` |
-| `testing.iyi` | Routes in their own module, tested in-process by `testing_test.iyi` |
+| `hello.ri` | The smallest application |
+| `json_api.ri` | CRUD over an in-memory store with `env.json`, `env.params.json`, status codes and `404` via `halt` |
+| `forms_and_uploads.ri` | Form fields, multipart uploads with limits, and `_method` override |
+| `templates.ri` | Views in `examples/views/` with a layout, `content_for` and a partial |
+| `routers.ri` | `Router`, `mount`, `namespace`, router filters and error pages |
+| `middleware.ri` | A custom `Handler` with `only` and `exclude`, CORS, gzip and static files from `examples/public/` |
+| `streaming_and_sse.ri` | `flush`, chunked responses and server-sent events |
+| `websocket_chat.ri` | A chat room over `ws`, broadcasting to every member |
+| `cookies_and_context.ri` | Cookies, redirects and `env.set` / `env.get` |
+| `testing.ri` | Routes in their own module, tested in-process by `testing_test.ri` |
 
-Each file's opening comment lists `curl` commands to try. `iyi test examples`
+Each file's opening comment lists `curl` commands to try. `ris test examples`
 runs the example test.
+
+## Memory
+
+Each request's objects - the request, its context and parameters, the
+response a handler writes - are ordinary objects on the garbage-collected
+heap: they are fields of classes, which tape memory may not be.
+
+What does use tape is the response on its way out. The server writes the
+status line, the headers and the body of a buffered response into a
+`TapeWriter` inside a `Tape.scope`, sends those bytes in one write and drops
+them when the scope ends. Before, every response was a new heap string with
+a copy of its body. `bench/run.sh`, 64 keep-alive connections with `ab`,
+median of five interleaved runs, 16-core Linux, 2026-10-16:
+
+| | heap strings | tape | |
+|---|---|---|---|
+| `/`, 12 bytes | 43,654 req/s | 44,720 req/s | +2%, within noise |
+| `/page`, 40 KB | 31,756 req/s | 34,650 req/s | +9% |
+| Peak RSS | 12.4 MB | 10.8 MB | -13% |
+
+`Response#to_http` returns the same bytes as a `String`, for tests and code
+that keeps them.
 
 ## Development
 
 ```sh
-iyi test iyi_web
-iyi run examples/hello.iyi
+./check.sh
+ris run examples/hello.ri
 ```
 
 ## License
 
-iyi-web is released under the [MIT License](LICENSE).
+web is released under the [MIT License](LICENSE).

@@ -149,6 +149,19 @@ pub class Response
   # same resource would have advertised. 1xx, 204 and 304 carry neither a
   # body nor a Content-Type.
   pub def to_http(version : String, include_body : Bool = true) : String
+    text = ""
+    Tape.local do
+      buffer = TapeWriter.new(http_capacity)
+      write_http(buffer, version, include_body)
+      text = buffer.finish.to_s
+    end
+    text
+  end
+
+  # The bytes of `to_http`, onto *buffer*. The server writes them onto the
+  # tape of the request it answers and sends them from there, so a
+  # response costs no garbage-collected copy of its body.
+  pub def write_http(buffer : TapeWriter, version : String, include_body : Bool) : Nil
     no_entity = no_entity?
     unless @headers.has_key?("Content-Type") || no_entity
       @headers["Content-Type"] = @content_type
@@ -160,12 +173,24 @@ pub class Response
       @headers["Content-Length"] = @body.bytesize.to_s
     end
 
-    reason = phrase(@status_code)
-    payload = include_body && !no_entity ? @body : ""
-    version + " " + @status_code.to_s + " " + reason + "\r\n" + @headers.to_s + "\r\n" + payload
+    buffer.append(version)
+    buffer.push(32_u8)
+    buffer.append_int(@status_code)
+    buffer.push(32_u8)
+    buffer.append(phrase(@status_code))
+    buffer.append("\r\n")
+    @headers.write(buffer)
+    buffer.append("\r\n")
+    buffer.append(@body) if include_body && !no_entity
   end
 
-  # Takes the connection over once this response - a 101 - is out. The
+  # Room for all of `write_http`'s bytes, so the buffer does not grow: the
+  # status line, the headers, the two `write_http` may add, and the body.
+  pub def http_capacity : Int32
+    128 + @content_type.bytesize + @headers.bytesize + @body.bytesize
+  end
+
+  # Takes the connection over once this response - a 101 - is buffer. The
   # server writes the status line and headers, then calls *block* with the
   # socket and whatever the client sent after the request, and the
   # connection carries no more HTTP. How a WebSocket starts.

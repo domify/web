@@ -1,0 +1,17 @@
+# The server benchmarked by bench/run.sh: a small answer and a 40 KB one.
+module bench/app
+
+import web/dsl::*
+
+PAGE = "<p>ris web</p>\n" * 2730
+
+get "/" do |env|
+  "Hello World!"
+end
+
+get "/page" do |env|
+  env.response.content_type = "text/html; charset=utf-8"
+  PAGE
+end
+
+run

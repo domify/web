@@ -59,9 +59,31 @@ pub class Headers
   end
 
   pub def to_s : String
-    parts = [] of String
-    @pairs.each { |pair| parts << pair[0] + ": " + pair[1] + "\r\n" }
-    parts.join
+    text = ""
+    Tape.local do
+      buffer = TapeWriter.new(bytesize)
+      write(buffer)
+      text = buffer.finish.to_s
+    end
+    text
+  end
+
+  # The header block as it goes on the wire, `Name: value` lines each
+  # ending in CRLF, onto *buffer*.
+  pub def write(buffer : TapeWriter) : Nil
+    @pairs.each do |pair|
+      buffer.append(pair[0])
+      buffer.append(": ")
+      buffer.append(pair[1])
+      buffer.append("\r\n")
+    end
+  end
+
+  # The size in bytes of what `write` writes.
+  pub def bytesize : Int32
+    total = 0
+    @pairs.each { |pair| total = total + pair[0].bytesize + pair[1].bytesize + 4 }
+    total
   end
 
   pub def empty? : Bool

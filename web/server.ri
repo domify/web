@@ -30,7 +30,7 @@
 # `idle_timeout` to start its next one, and a write `write_timeout` for
 # the client to take bytes. The socket's own bound is per wait, so the
 # read bound is set before every read from what is left of the request's
-# deadline; a client trickling a byte at a time still runs out.
+# deadline; a client trickling a byte at a time still runs buffer.
 module web/server
 
 import std/socket::{IyiSocket, SocketError}
@@ -106,7 +106,7 @@ pub class Server
         in Cancelled
           break
         in SocketError
-          # The listener's own trouble - descriptors run out, most often -
+          # The listener's own trouble - descriptors run buffer, most often -
           # is waited out rather than spun on: 5 ms doubling to a second,
           # as `std/http`'s server does, and the next accept that works
           # resets it.
@@ -330,7 +330,7 @@ pub class Server
       keepalive = keepalive && ctx.response.reusable?
     else
       ctx.response.headers["Connection"] = keepalive ? "keep-alive" : "close"
-      write_raw(client, ctx.response.to_http(wire_version(request), !head))
+      send(client, ctx.response, wire_version(request), !head)
     end
     exchange.writing = false
     exchange.context = nil
@@ -342,12 +342,12 @@ pub class Server
   end
 
   # A 101 hands the connection to whoever asked for it once the status line
-  # and headers are out, and the connection carries no more HTTP. The read
+  # and headers are buffer, and the connection carries no more HTTP. The read
   # timeout was for a request arriving; an upgraded connection waits on
   # its own terms. A panic from here on has no response to become.
   private def take_over(client : IyiSocket, ctx : Context, leftover : String, exchange : Exchange, upgrade : Proc(IyiSocket, String, Nil)) : Bool
     exchange.writing = true
-    write_raw(client, ctx.response.to_http(wire_version(ctx.request), false))
+    send(client, ctx.response, wire_version(ctx.request), false)
     exchange.writing = false
     exchange.context = nil
     client.read_timeout_ms = nil
@@ -364,7 +364,7 @@ pub class Server
     end
   end
 
-  # The handler panicked before its response went out. The response is
+  # The handler panicked before its response went buffer. The response is
   # rebuilt from nothing: whatever the handler had written is not a page
   # anyone meant to send. The application's `error 500` page is used when
   # it renders; it is application code, so it may panic too, and then the
@@ -394,7 +394,7 @@ pub class Server
     if @config.logging
       @config.logger.request(ctx, Time.monotonic - started)
     end
-    write_raw(client, ctx.response.to_http(wire_version(request), !HTTP.same_name?(request.method, "HEAD")))
+    send(client, ctx.response, wire_version(request), !HTTP.same_name?(request.method, "HEAD"))
   end
 
   private def prepare_500(ctx : Context) : Nil
@@ -483,7 +483,28 @@ pub class Server
     res.content_type = "text/plain; charset=utf-8"
     res.set_body(body)
     res.headers["Connection"] = "close"
-    write_raw(client, res.to_http("HTTP/1.1"))
+    send(client, res, "HTTP/1.1", true)
+  end
+
+  # A buffered response leaves in one write, from the tape of the request
+  # it answers: its bytes go when the scope ends, not to the collector.
+  private def send(client : IyiSocket, res : Response, version : String, include_body : Bool) : Nil
+    Tape.scope do
+      buffer = TapeWriter.new(res.http_capacity)
+      res.write_http(buffer, version, include_body)
+      wire = buffer.finish
+      write_raw(client, wire.to_unsafe, wire.bytesize)
+    end
+  end
+
+  private def write_raw(client : IyiSocket, bytes : Pointer(UInt8), count : Int32) : Nil
+    raise "the connection was cut off at shutdown" if client.closed?
+    case wrote = client.write(bytes, count)
+    in Cancelled
+    in SocketError
+      raise wrote.message
+    in Int32
+    end
   end
 
   private def write_raw(client : IyiSocket, bytes : String) : Nil
@@ -506,7 +527,7 @@ pub struct TimedOut
 end
 
 # What a connection's task was doing when it stopped: the request being
-# handled, until its response starts going out.
+# handled, until its response starts going buffer.
 class Exchange
   property context : Context?
   property started : Span

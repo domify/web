@@ -1,10 +1,20 @@
 # Changelog
 
-All notable changes to iyi-web are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to web, and before it iyi-web, are recorded here. The
+format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- Ported to ris as `web` (`github.com/domify/web`): modules are `web/...`
+  and files `.ri`. The environment variable is `WEB_ENV`, the default
+  `app_name` and `X-Powered-By` are `web`.
+- A buffered response is serialised onto the request's tape and sent in
+  one write: +9% requests per second on a 40 KB page, -13% peak RSS.
+- ris's `std/http` refuses an HTTP/1.1 request without exactly one `Host`
+  and joins the values of a repeated header.
 
 ### Added
 

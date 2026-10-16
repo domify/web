@@ -51,7 +51,7 @@ pub class Config
     @app_name = "web"
     @host = "0.0.0.0"
     @port = 3000
-    env = Program.env("IYI_WEB_ENV")
+    env = Program.env("WEB_ENV")
     @env = env ? env : "development"
     port_env = Program.env("PORT")
     parsed = port_env ? port_env.to_i? : nil
