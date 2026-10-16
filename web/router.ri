@@ -1,0 +1,520 @@
+# Modular routing, ported from Kemal's `Router` and then actually dispatched
+# rather than flattened into Crystal globals.
+#
+# Registration returns a value. `Kemal::RouteHandler::INSTANCE` and the
+# three singletons beside it are gone: they were the workaround a clean
+# sheet is the moment to stop writing.
+module web/router
+
+import web/body::{IntoBody}
+import web/codec::*
+import web/context::{Context}
+import web/radix::{Tree, Match}
+import web/handler::{Handler}
+import web/status::*
+import web/event_stream::{EventStream}
+import web/websocket::{WebSocket}
+import web/config::{Config, config}
+
+alias HandlerProc = Context -> String
+
+HTTP_METHODS   = %w(get post put patch delete options head query)
+FILTER_METHODS = %w(get post put patch delete options query)
+
+pub struct Route
+  def initialize(@method : String, @path : String, @handler : Context -> String)
+  end
+
+  pub def method : String
+    @method
+  end
+
+  pub def path : String
+    @path
+  end
+
+  pub def handler : Context -> String
+    @handler
+  end
+end
+
+# A `ws` route: the path as declared, prefixes included, and its block.
+pub struct SocketRoute
+  def initialize(@path : String, @handler : Proc(WebSocket, Context, Nil))
+  end
+
+  pub def path : String
+    @path
+  end
+
+  pub def handler : Proc(WebSocket, Context, Nil)
+    @handler
+  end
+end
+
+private record RouteDefinition,
+  method : String,
+  path : String,
+  handler : Context -> String
+
+private record FilterDefinition,
+  kind : Symbol,
+  method : String,
+  path : String,
+  handler : Context -> String
+
+private record SubRouter,
+  path : String,
+  router : Router
+
+private record SocketDefinition,
+  path : String,
+  handler : Proc(WebSocket, Context, Nil)
+
+pub class Router
+  @routes : Array(RouteDefinition)
+  @filters : Array(FilterDefinition)
+  @sub_routers : Array(SubRouter)
+  @sockets : Array(SocketDefinition)
+  @error_handlers : Hash(Int32, HandlerProc)
+
+  def initialize(@prefix : String = "")
+    @routes = [] of RouteDefinition
+    @filters = [] of FilterDefinition
+    @sub_routers = [] of SubRouter
+    @sockets = [] of SocketDefinition
+    @error_handlers = {} of Int32 => HandlerProc
+  end
+
+  pub def prefix : String
+    @prefix
+  end
+
+  {% for method in HTTP_METHODS %}
+    pub def {{ method.id }}(path : String, &block : Context -> B) : Nil forall B : IntoBody
+      add_route({{ method.upcase }}, path, &block)
+    end
+  {% end %}
+
+  # A GET route that answers with a server-sent event stream. The block
+  # gets the stream and the context; the stream ends when it returns.
+  pub def sse(path : String, &block : EventStream, Context -> Nil) : Nil
+    get(path) do |env|
+      EventStream.serve(env) { |stream| block.call(stream, env) }
+      nil
+    end
+  end
+
+  # A WebSocket endpoint. A GET asking to upgrade gets the handshake; once
+  # its 101 is out, the block gets the socket and the context to set the
+  # callbacks, and the connection's task then reads frames until the
+  # socket closes. Before and after filters run for the handshake as for
+  # any GET. See `WebSocket`.
+  pub def ws(path : String, &block : WebSocket, Context -> Nil) : Nil
+    raise "path must start with /" unless path.starts_with?('/')
+    @sockets << SocketDefinition.new(path: path, handler: block)
+  end
+
+  pub def before(path : String = "*", &block : Context -> B) : Nil forall B : IntoBody
+    add_filter(:before, "ALL", path, &block)
+  end
+
+  pub def after(path : String = "*", &block : Context -> B) : Nil forall B : IntoBody
+    add_filter(:after, "ALL", path, &block)
+  end
+
+  # One block for several paths: registered once per path.
+  pub def before(paths : Array(String), &block : Context -> B) : Nil forall B : IntoBody
+    paths.each { |path| add_filter(:before, "ALL", path, &block) }
+  end
+
+  pub def after(paths : Array(String), &block : Context -> B) : Nil forall B : IntoBody
+    paths.each { |path| add_filter(:after, "ALL", path, &block) }
+  end
+
+  {% for method in FILTER_METHODS %}
+    pub def before_{{ method.id }}(path : String = "*", &block : Context -> B) : Nil forall B : IntoBody
+      add_filter(:before, {{ method.upcase }}, path, &block)
+    end
+
+    pub def after_{{ method.id }}(path : String = "*", &block : Context -> B) : Nil forall B : IntoBody
+      add_filter(:after, {{ method.upcase }}, path, &block)
+    end
+
+    pub def before_{{ method.id }}(paths : Array(String), &block : Context -> B) : Nil forall B : IntoBody
+      paths.each { |path| add_filter(:before, {{ method.upcase }}, path, &block) }
+    end
+
+    pub def after_{{ method.id }}(paths : Array(String), &block : Context -> B) : Nil forall B : IntoBody
+      paths.each { |path| add_filter(:after, {{ method.upcase }}, path, &block) }
+    end
+  {% end %}
+
+  # The sub-router arrives as a block parameter. Kemal's original used
+  # `with sub_router yield`, which changes the block's `self` — a shape
+  # no `& : Router -> Nil` annotation can describe (SPEC.md IV.2). One
+  # extra `|r|` is the rule being paid rather than avoided.
+  pub def namespace(path : String, & : Router -> Nil) : Nil
+    sub_router = Router.new
+    yield sub_router
+    @sub_routers << SubRouter.new(path: path, router: sub_router)
+  end
+
+  pub def mount(path : String, router : Router) : Nil
+    @sub_routers << SubRouter.new(path: path, router: router)
+  end
+
+  pub def mount(router : Router) : Nil
+    mount("", router)
+  end
+
+  pub def error(status_code : Int32, &block : Context -> B) : Nil forall B : IntoBody
+    @error_handlers[status_code] = ->(ctx : Context) { block.call(ctx).into_body }
+  end
+
+  pub def error_handler(status_code : Int32) : HandlerProc?
+    error_handlers[status_code]?
+  end
+
+  # Parent first, then each mount, so a nested `error 404` replaces the
+  # parent's for the same code. Routes and filters already flatten this way.
+  pub def error_handlers : Hash(Int32, HandlerProc)
+    collected = {} of Int32 => HandlerProc
+    @error_handlers.each do |code, handler|
+      collected[code] = handler
+    end
+    @sub_routers.each do |sub|
+      sub.router.error_handlers.each do |code, handler|
+        collected[code] = handler
+      end
+    end
+    collected
+  end
+
+  pub def routes(base_prefix : String = "") : Array(Route)
+    full_prefix = join_paths(base_prefix, @prefix)
+    collected = [] of Route
+
+    @routes.each do |route|
+      collected << Route.new(route.method, join_paths(full_prefix, route.path), route.handler)
+    end
+
+    @sub_routers.each do |sub|
+      collected.concat(sub.router.routes(join_paths(full_prefix, sub.path)))
+    end
+
+    collected
+  end
+
+  pub def ws_routes(base_prefix : String = "") : Array(SocketRoute)
+    full_prefix = join_paths(base_prefix, @prefix)
+    collected = [] of SocketRoute
+
+    @sockets.each do |socket|
+      collected << SocketRoute.new(join_paths(full_prefix, socket.path), socket.handler)
+    end
+
+    @sub_routers.each do |sub|
+      collected.concat(sub.router.ws_routes(join_paths(full_prefix, sub.path)))
+    end
+
+    collected
+  end
+
+  pub def filters(base_prefix : String = "") : Array(Tuple(Symbol, String, String, HandlerProc))
+    full_prefix = join_paths(base_prefix, @prefix)
+    collected = [] of Tuple(Symbol, String, String, HandlerProc)
+
+    @filters.each do |filter|
+      collected << {filter.kind, filter.method, join_paths(full_prefix, filter.path), filter.handler}
+    end
+
+    @sub_routers.each do |sub|
+      collected.concat(sub.router.filters(join_paths(full_prefix, sub.path)))
+    end
+
+    collected
+  end
+
+  private def add_route(method : String, path : String, &block : Context -> B) : Nil forall B : IntoBody
+    raise "path must start with /" unless path.starts_with?('/')
+    handler = ->(ctx : Context) { block.call(ctx).into_body }
+    @routes << RouteDefinition.new(method: method, path: path, handler: handler)
+  end
+
+  private def add_filter(kind : Symbol, method : String, path : String, &block : Context -> B) : Nil forall B : IntoBody
+    handler = ->(ctx : Context) { block.call(ctx).into_body }
+    @filters << FilterDefinition.new(kind: kind, method: method, path: path, handler: handler)
+  end
+end
+
+# The last handler in the chain: look the route up, run before-filters,
+# call the block, run after-filters, and render 404/405 when nothing
+# matched. HEAD falls back to GET the way RFC 9110 §9.3.1 asks.
+#
+# `before_all` filters also run for a request no route matched, before
+# its 404 or 405, so an authentication or logging filter sees it too.
+# Per-method before filters and every after filter run only for a match.
+#
+# A `ws` route takes a request whose `Upgrade` names `websocket`: a GET
+# runs the before filters for GET, then the handshake, which answers 101
+# or refuses with 400, 403 or 426 and closes the connection, then the
+# after filters. A before filter that halts or leaves an error status
+# refuses the upgrade too. Another method is left to an HTTP route that
+# serves it, or is refused with 405. A request that does not ask to
+# upgrade is routed as usual; a GET only a `ws` route serves gets 426
+# with `Upgrade: websocket`.
+pub class RouteHandler < Handler
+  @tree : Tree(Route)
+  @filters : Array(Tuple(Symbol, String, String, HandlerProc))
+  @error_handlers : Hash(Int32, HandlerProc)
+  @methods : Array(String)
+  @sockets : Tree(SocketRoute)
+  @config : Config
+
+  # *settings* supplies the WebSocket origin list and message limit, read
+  # at each handshake.
+  def initialize(router : Router, settings : Config = config)
+    super()
+    @tree = Tree(Route).new
+    @filters = router.filters
+    @error_handlers = {} of Int32 => HandlerProc
+    @methods = [] of String
+    @sockets = Tree(SocketRoute).new
+    @config = settings
+
+    router.error_handlers.each do |code, handler|
+      @error_handlers[code] = handler
+    end
+
+    seen = {} of String => Bool
+    router.routes.each do |route|
+      unless @tree.add("/" + route.method + route.path, route)
+        raise "route #{route.method} #{route.path} is defined twice"
+      end
+      unless seen.has_key?(route.method)
+        @methods << route.method
+        seen[route.method] = true
+      end
+    end
+
+    router.ws_routes.each do |socket|
+      raise "ws #{socket.path} is defined twice" unless @sockets.add(socket.path, socket)
+    end
+  end
+
+  pub def call(ctx : Context) : Nil
+    return if ctx.halted?
+
+    method = ctx.request.method
+    path = ctx.request.path
+
+    if method == "QUERY" && !ctx.request.body.empty? && ctx.request.content_type.empty?
+      render_error(ctx, 400)
+      drop_head_body(ctx)
+      return
+    end
+
+    if WebSocket.upgrade_request?(ctx.request)
+      if socket = @sockets.find(path)
+        return if serve_socket(ctx, socket)
+      end
+    end
+
+    match = lookup(method, path)
+
+    unless match
+      run_filters(ctx, :before, "ALL", path, true)
+      if ctx.halted?
+        drop_head_body(ctx)
+        return
+      end
+      allowed = allowed_methods(path)
+      if !allowed.empty? && !allowed.includes?(method)
+        ctx.response.headers["Allow"] = allowed.join(", ")
+        render_error(ctx, 405)
+        drop_head_body(ctx)
+        return
+      end
+      if method == "GET" && @sockets.find(path)
+        # RFC 9110 §15.5.22: the path speaks WebSocket and nothing else.
+        ctx.response.headers["Upgrade"] = "websocket"
+        render_error(ctx, 426)
+        return
+      end
+      render_error(ctx, 404)
+      drop_head_body(ctx)
+      return
+    end
+
+    route = match.payload
+    ctx.params.update_url(match.params)
+    ctx.matched(route.method, route.path)
+
+    run_filters(ctx, :before, route.method, path)
+    if ctx.halted?
+      drop_head_body(ctx)
+      return
+    end
+
+    # A before filter that left an error status with a page of its own
+    # gets that page, and the route does not run.
+    if ctx.response.status_code >= 400
+      if custom = @error_handlers[ctx.response.status_code]?
+        render_page(ctx, custom)
+        drop_head_body(ctx)
+        return
+      end
+    end
+
+    unless ctx.params.json_valid?
+      render_error(ctx, 400)
+      drop_head_body(ctx)
+      return
+    end
+
+    if unreadable = ctx.params.body_error
+      render_error(ctx, unreadable)
+      drop_head_body(ctx)
+      return
+    end
+
+    body = route.handler.call(ctx)
+    unless ctx.halted?
+      # A helper like `env.text` already wrote the body and returned nil.
+      # Replacing that with the empty IntoBody would wipe it.
+      ctx.response.set_body(body) unless body.empty? && !ctx.response.body.empty?
+    end
+
+    if ctx.halted?
+      drop_head_body(ctx)
+      return
+    end
+
+    run_filters(ctx, :after, route.method, path)
+
+    if custom = @error_handlers[ctx.response.status_code]?
+      if ctx.response.status_code >= 400
+        render_page(ctx, custom)
+      end
+    end
+
+    drop_head_body(ctx)
+  end
+
+  pub def lookup(method : String, path : String) : Match(Route)?
+    found = @tree.find("/" + method + path)
+    return found if found
+    return @tree.find("/GET" + path) if method == "HEAD"
+    nil
+  end
+
+  private def drop_head_body(ctx : Context) : Nil
+    return unless ctx.request.method == "HEAD"
+    status = ctx.response.status_code
+    bodiless = status == 204 || status == 304 || (status >= 100 && status < 200)
+    unless ctx.response.headers.has_key?("Content-Length") || bodiless
+      ctx.response.headers["Content-Length"] = ctx.response.body.bytesize.to_s
+    end
+    ctx.response.set_body("")
+  end
+
+  private def allowed_methods(path : String) : Array(String)
+    allowed = [] of String
+    @methods.each do |method|
+      if @tree.find("/" + method + path)
+        allowed << method
+      end
+    end
+    if allowed.includes?("GET") && !allowed.includes?("HEAD")
+      allowed << "HEAD"
+    end
+    # The handshake is a GET, and a `ws` route serves nothing else, so it
+    # adds GET but no HEAD.
+    return allowed if allowed.includes?("GET") || @sockets.find(path).nil?
+    ["GET"] + allowed
+  end
+
+  # An upgrade request on a `ws` route. False when it is not the route's to
+  # answer: a method other than GET that an HTTP route on the path serves.
+  private def serve_socket(ctx : Context, found : Match(SocketRoute)) : Bool
+    method = ctx.request.method
+    path = ctx.request.path
+    unless method == "GET"
+      return false if lookup(method, path)
+      run_filters(ctx, :before, "ALL", path, true)
+      unless ctx.halted?
+        ctx.response.headers["Allow"] = allowed_methods(path).join(", ")
+        refuse_upgrade(ctx, 405)
+      end
+      drop_head_body(ctx)
+      return true
+    end
+
+    socket = found.payload
+    ctx.params.update_url(found.params)
+    ctx.matched("GET", socket.path)
+    run_filters(ctx, :before, "GET", path)
+    return true if ctx.halted?
+    if ctx.response.status_code >= 400
+      # A filter that answered with an error refused the upgrade.
+      if custom = @error_handlers[ctx.response.status_code]?
+        ctx.response.set_body(custom.call(ctx))
+      end
+      ctx.response.headers["Connection"] = "close"
+      return true
+    end
+
+    if status = WebSocket.refusal(ctx.request, @config.websocket_allowed_origins)
+      refuse_upgrade(ctx, status)
+    else
+      WebSocket.accept(ctx, @config.websocket_max_message_size, socket.handler)
+    end
+    run_filters(ctx, :after, "GET", path)
+    true
+  end
+
+  # A refused handshake also closes the connection, so nothing pipelined
+  # behind it is read as the next request: Kemal's guard against
+  # smuggling a request past a proxy that took the upgrade as done.
+  private def refuse_upgrade(ctx : Context, status : Int32) : Nil
+    render_error(ctx, status)
+    ctx.response.headers["Sec-WebSocket-Version"] = "13" if status == 426
+    ctx.response.headers["Connection"] = "close"
+  end
+
+  # *only_all* limits the run to filters registered for every method: what
+  # an unmatched request gets.
+  private def run_filters(ctx : Context, kind : Symbol, method : String, path : String, only_all : Bool = false) : Nil
+    @filters.each do |filter|
+      next unless filter[0] == kind
+      if only_all
+        next unless filter[1] == "ALL"
+      else
+        next unless filter[1].in?("ALL", method)
+      end
+      next unless pattern_matches?(filter[2], path)
+      filter[3].call(ctx)
+      return if ctx.halted?
+    end
+  end
+
+  private def render_error(ctx : Context, status : Int32) : Nil
+    ctx.response.status_code = status
+    if handler = @error_handlers[status]?
+      render_page(ctx, handler)
+    else
+      ctx.response.content_type = "text/html; charset=utf-8"
+      ctx.response.set_body(status.to_s + " " + phrase(status))
+    end
+  end
+
+  # An error page answers its body, or writes it with a helper such as
+  # `env.json` and answers nil. What the response held before - a route's
+  # own body, a halt's message - is not the page, so it goes first.
+  private def render_page(ctx : Context, page : HandlerProc) : Nil
+    ctx.response.set_body("")
+    body = page.call(ctx)
+    ctx.response.set_body(body) unless body.empty?
+  end
+end

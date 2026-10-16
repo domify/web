@@ -1,0 +1,28 @@
+# Status phrases: `std/http`'s table, plus the codes Kemal actually sends
+# that that table does not name. An unnamed code still serialises; it
+# gets the class `HTTP.reason_for` gives it.
+module web/status
+
+import std/http::{HTTP}
+
+pub def phrase(code : Int32) : String
+  case code
+  when 101 then "Switching Protocols"
+  when 206 then "Partial Content"
+  when 302 then "Found"
+  when 303 then "See Other"
+  when 307 then "Temporary Redirect"
+  when 308 then "Permanent Redirect"
+  when 405 then "Method Not Allowed"
+  when 409 then "Conflict"
+  when 410 then "Gone"
+  when 414 then "URI Too Long"
+  when 415 then "Unsupported Media Type"
+  when 418 then "I'm a teapot"
+  when 422 then "Unprocessable Content"
+  when 426 then "Upgrade Required"
+  when 429 then "Too Many Requests"
+  when 502 then "Bad Gateway"
+  else          HTTP.reason_for(code)
+  end
+end

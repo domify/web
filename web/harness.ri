@@ -1,0 +1,99 @@
+# Shared construction for tests. Not a `*_test.ri`, so `ris test` does not
+# run it; every test that would otherwise rebuild a Host header imports this
+# instead.
+module web/harness
+
+import std/http::{HTTP}
+import std/text
+import web/headers::{Headers}
+import web/request::{Request}
+import web/context::{Context}
+import web/handler::{Handler}
+import web/router::{Router, RouteHandler}
+
+pub def http_request(method : String, path : String, query : String = "", body : String = "", content_type : String = "") : Request
+  headers = Headers.new
+  headers["Host"] = "localhost"
+  if !content_type.empty?
+    headers["Content-Type"] = content_type
+  end
+  if !body.empty?
+    headers["Content-Length"] = body.bytesize.to_s
+  end
+  Request.new(method, path, query, "HTTP/1.1", headers, body)
+end
+
+pub def dispatch(handler : Handler, request : Request) : Context
+  ctx = Context.for(request)
+  handler.call(ctx)
+  ctx
+end
+
+pub def dispatch(handler : Handler, method : String, path : String) : Context
+  dispatch(handler, http_request(method, path))
+end
+
+# Isolated app: a Router filled by the block, already wrapped as a Handler.
+# Each example builds its own so one route cannot rewrite the next.
+pub def routes(& : Router -> Nil) : RouteHandler
+  router = Router.new
+  yield router
+  RouteHandler.new(router)
+end
+
+pub def form_request(method : String, path : String, body : String) : Request
+  http_request(method, path, "", body, "application/x-www-form-urlencoded")
+end
+
+# First line of an HTTP/1.1 response, without the CRLF.
+pub def status_line(raw : String) : String
+  ending = raw.index("\r\n")
+  ending ? raw[0, ending] : raw
+end
+
+# Header value, last-wins, case-insensitive. Nil when absent.
+pub def http_header(raw : String, name : String) : String?
+  sep = HTTP.find_headers_end(raw)
+  return nil unless sep
+
+  block = raw[0, sep]
+  want = name.downcase
+  found = nil
+  first = true
+
+  HTTP.split_crlf(block).each do |line|
+    unless first
+      colon = line.index(':')
+      if colon
+        key = line[0, colon]
+        if key.downcase == want
+          found = line[colon + 1, line.bytesize - colon - 1].strip
+        end
+      end
+    end
+    first = false
+  end
+
+  found
+end
+
+pub def http_body(raw : String) : String
+  sep = HTTP.find_headers_end(raw)
+  return "" unless sep
+  raw[sep + 4, raw.bytesize - sep - 4]
+end
+
+# Byte length of the first HTTP/1.1 response in *raw*, or nil until the
+# headers (and, for a GET, the Content-Length body) have arrived. HEAD
+# advertises a length and sends no body: if the bytes after the blank
+# line already look like the next response, the body is treated as empty.
+pub def http_frame_size(raw : String) : Int32?
+  sep = HTTP.find_headers_end(raw)
+  return nil unless sep
+  header = http_header(raw, "Content-Length")
+  extra = header ? (header.to_i? || 0) : 0
+  rest_len = raw.bytesize - sep - 4
+  rest = rest_len > 0 ? raw[sep + 4, rest_len] : ""
+  extra = 0 if extra > 0 && rest.starts_with?("HTTP/")
+  sep + 4 + extra
+end

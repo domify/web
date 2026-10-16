@@ -1,0 +1,46 @@
+# POST + `_method` becomes PUT/PATCH/DELETE, the way an HTML form pretends.
+module web/override_test
+
+import web/override::{OverrideMethodHandler}
+import web/handler::{chain}
+import web/harness::*
+import web/spec::*
+
+def override_app
+  chain([OverrideMethodHandler.new, routes { |r|
+    r.post "/item" do |env|
+      "posted"
+    end
+    r.put "/item" do |env|
+      "put"
+    end
+    r.patch "/item" do |env|
+      "patched"
+    end
+    r.delete "/item" do |env|
+      "deleted"
+    end
+  }])
+end
+
+describe "OverrideMethodHandler" do
+  it "leaves a POST without _method as POST" do
+    assert dispatch(override_app, form_request("POST", "/item", "name=x")).response.body == "posted"
+  end
+
+  it "turns POST + _method=PUT into PUT" do
+    assert dispatch(override_app, form_request("POST", "/item", "_method=PUT")).response.body == "put"
+  end
+
+  it "matches _method case-insensitively" do
+    assert dispatch(override_app, form_request("POST", "/item", "_method=patch")).response.body == "patched"
+  end
+
+  it "turns POST + _method=DELETE into DELETE" do
+    assert dispatch(override_app, form_request("POST", "/item", "_method=DELETE")).response.body == "deleted"
+  end
+
+  it "does not allow GET as an override" do
+    assert dispatch(override_app, form_request("POST", "/item", "_method=GET")).response.body == "posted"
+  end
+end

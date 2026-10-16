@@ -1,0 +1,9 @@
+module examples/hello
+
+import web/dsl::*
+
+get "/" do |env|
+  "Hello World!"
+end
+
+run

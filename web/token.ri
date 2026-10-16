@@ -1,0 +1,52 @@
+# Names nobody can guess: multipart boundaries, and the directories
+# uploads are spooled into.
+module web/token
+
+import std/random::{Random}
+import std/int
+
+# *count* random bytes as `2 * count` lower-case hex digits.
+pub def random_hex(count : Int32) : String
+  hex(random_bytes(count))
+end
+
+# `File.exists?` is an open for reading, so it answers whether the device
+# can be read. wasm32 has no such path to ask about.
+#
+# Where there is no `/dev/urandom` - Windows, wasm32 - the bytes come from
+# `std/random` seeded by `Random.new`, which reads the platform's own
+# entropy (`RtlGenRandom` on Windows; the clocks on wasm32, which has none).
+private def random_bytes(count : Int32) : String
+  {% if !flag?(:wasm32) %}
+    if File.exists?("/dev/urandom")
+      bytes = ""
+      File.open("/dev/urandom", "r", count) do |io|
+        bytes = io.read_bytes(count)
+      end
+      return bytes if bytes.bytesize == count
+    end
+  {% end %}
+
+  rng = Random.new
+  String.new(count) do |target|
+    index = 0
+    while index < count
+      target[index] = (rng.next_u & 255_u32).to_u8
+      index = index + 1
+    end
+  end
+end
+
+private def hex(bytes : String) : String
+  digits = "0123456789abcdef"
+  source = bytes.to_unsafe
+  String.new(bytes.bytesize * 2) do |target|
+    index = 0
+    while index < bytes.bytesize
+      byte = source[index]
+      target[index * 2] = digits.to_unsafe[(byte >> 4).to_i32]
+      target[index * 2 + 1] = digits.to_unsafe[(byte & 15_u8).to_i32]
+      index = index + 1
+    end
+  end
+end

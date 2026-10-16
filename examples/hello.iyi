@@ -1,9 +1,0 @@
-module examples/hello
-
-import iyi_web/dsl::*
-
-get "/" do |env|
-  "Hello World!"
-end
-
-run

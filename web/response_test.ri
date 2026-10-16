@@ -1,0 +1,133 @@
+# Writable response: status, headers, body, and the exact bytes a socket is owed.
+module web/response_test
+
+import web/response::{Response}
+import web/spec::*
+
+describe "Response" do
+  it "starts as 200 HTML with an empty body" do
+    res = Response.new
+    assert res.status_code == 200
+    assert res.body == ""
+    assert !res.closed?
+    assert res.content_type == "text/html; charset=utf-8"
+  end
+
+  it "concatenates print/write and replaces with set_body" do
+    res = Response.new
+    res.status_code = 201
+    res.content_type = "application/json"
+    res.print("{")
+    res.write("}")
+    assert res.body == "{}"
+    assert res.headers["content-type"] == "application/json"
+
+    res.set_body("ok")
+    assert res.body == "ok"
+  end
+
+  it "serialises status, headers, a blank line and the body" do
+    res = Response.new
+    res.status_code = 201
+    res.content_type = "application/json"
+    res.set_body("ok")
+    res.close
+    assert res.closed?
+    assert res.to_http("HTTP/1.1") == "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nok"
+  end
+
+  it "writes the default type and length when neither was set" do
+    res = Response.new
+    res.set_body("ok")
+    assert res.to_http("HTTP/1.1") == "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 2\r\n\r\nok"
+  end
+
+  it "leaves an existing Content-Length alone" do
+    res = Response.new
+    res.headers["Content-Length"] = "99"
+    res.set_body("x")
+    kept = res.to_http("HTTP/1.1")
+    assert kept.includes?("Content-Length: 99\r\n")
+    assert kept.includes?("\r\n\r\nx")
+  end
+
+  it "still serialises an unnamed status code" do
+    res = Response.new
+    res.status_code = 599
+    res.set_body("")
+    assert res.to_http("HTTP/1.1").starts_with?("HTTP/1.1 599 Server Error\r\n")
+  end
+
+  it "omits the body on HEAD and keeps the length" do
+    res = Response.new
+    res.set_body("ok")
+    assert res.to_http("HTTP/1.1", false) == "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 2\r\n\r\n"
+  end
+
+  it "sends no entity body, Content-Type or Content-Length for 204 and 304" do
+    res = Response.new
+    res.status_code = 204
+    res.set_body("nope")
+    assert res.to_http("HTTP/1.1") == "HTTP/1.1 204 No Content\r\n\r\n"
+    cached = Response.new
+    cached.status_code = 304
+    cached.headers["ETag"] = "W/\"1\""
+    assert cached.to_http("HTTP/1.1") == "HTTP/1.1 304 Not Modified\r\nETag: W/\"1\"\r\n\r\n"
+  end
+
+  it "streams a flushed body in chunks and ends it with the last chunk" do
+    writes = [] of String
+    res = Response.new
+    res.attach(->(bytes : String) { writes << bytes; nil }, "HTTP/1.1", true, false)
+    res.print("ab")
+    res.flush
+    assert res.headers_sent?
+    res.print("cd")
+    res.finish
+    assert writes.size == 4
+    assert writes[0].starts_with?("HTTP/1.1 200 OK\r\n")
+    assert writes[0].includes?("Transfer-Encoding: chunked\r\n")
+    assert writes[0].includes?("Connection: keep-alive\r\n")
+    assert !writes[0].includes?("Content-Length")
+    assert writes[1] == "2\r\nab\r\n"
+    assert writes[2] == "2\r\ncd\r\n"
+    assert writes[3] == "0\r\n\r\n"
+    assert res.reusable?
+  end
+
+  it "streams raw bytes when the length is known or the client speaks HTTP/1.0" do
+    sized = [] of String
+    known = Response.new
+    known.attach(->(bytes : String) { sized << bytes; nil }, "HTTP/1.1", true, false)
+    known.headers["Content-Length"] = "4"
+    known.print("abcd")
+    known.finish
+    assert sized[1] == "abcd"
+    assert sized.size == 2
+    assert known.reusable?
+
+    old = [] of String
+    legacy = Response.new
+    legacy.attach(->(bytes : String) { old << bytes; nil }, "HTTP/1.0", true, false)
+    legacy.print("x")
+    legacy.finish
+    assert old[0].includes?("Connection: close\r\n")
+    assert old[1] == "x"
+    assert !legacy.reusable?
+  end
+
+  it "keeps buffering when nothing is attached, and sends no body for HEAD" do
+    buffered = Response.new
+    buffered.print("a")
+    buffered.flush
+    assert !buffered.headers_sent?
+    assert buffered.body == "a"
+
+    heads = [] of String
+    head = Response.new
+    head.attach(->(bytes : String) { heads << bytes; nil }, "HTTP/1.1", true, true)
+    head.print("hidden")
+    head.finish
+    assert heads.size == 1
+  end
+end
