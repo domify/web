@@ -1,0 +1,95 @@
+# Where a request's time and heap go, stage by stage, in-process: no socket,
+# so other load on the machine moves the numbers less. Each stage runs N
+# times, seven rounds; the time is the fastest round's, per request, and the
+# heap is what the collector counted as allocated, per request, with
+# automatic collection off.
+#
+#   ris run --release bench/stages.ri
+module bench/stages
+
+import std/time::{Time, Span}
+import std/int
+import std/text
+import web/intake::{Intake, TooLarge}
+import web/request::{Request, ParseError}
+import web/context::{Context}
+import web/harness::*
+import web/http_date::*
+import web/log::{request_log_line}
+
+N = 200000
+
+# What a browser sends for a page.
+WIRE = "GET / HTTP/1.1\r\nHost: localhost:3000\r\nUser-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.5\r\nAccept-Encoding: gzip, deflate, br\r\nConnection: keep-alive\r\n\r\n"
+
+def nanos(span : Span) : Int64
+  span.total_seconds_i64 * 1000000000_i64 + span.nanoseconds.to_i64
+end
+
+def report(name : String, &block : -> Nil) : Nil
+  best = 9223372036854775807_i64
+  7.times do
+    started = Time.monotonic
+    i = 0
+    while i < N
+      block.call
+      i = i + 1
+    end
+    took = nanos(Time.monotonic - started)
+    best = took if took < best
+  end
+  before = IyiMark.allocated_since
+  i = 0
+  while i < N
+    block.call
+    i = i + 1
+  end
+  bytes = (IyiMark.allocated_since - before) // N.to_u64
+  puts "#{name.ljust(28)} #{(best // N).to_s.rjust(6)} ns  #{bytes.to_s.rjust(6)} B"
+end
+
+def take(wire : String) : Request
+  request = nil.as(Request?)
+  Tape.scope do
+    intake = Intake.new("", 1048576)
+    intake.append(wire.to_unsafe, wire.bytesize)
+    case got = intake.take
+    in Tuple(Request, String, Bool) then request = got[0]
+    in ParseError, TooLarge, Nil    then raise "not taken"
+    end
+  end
+  request || raise "not taken"
+end
+
+handler = routes do |r|
+  r.get "/" do |env|
+    "Hello World!"
+  end
+end
+
+request = take(WIRE)
+IyiMark.auto = false
+
+report("intake + parse_head + Request") { take(WIRE) }
+report("Context.for") { Context.for(request) }
+report("Context + router + handler") { dispatch(handler, request) }
+ctx = dispatch(handler, request)
+report("Date header") { ctx.response.headers["Date"] = http_date(Time.utc) }
+report("serialise onto tape") do
+  Tape.scope do
+    buffer = TapeWriter.new(ctx.response.http_capacity)
+    ctx.response.write_http(buffer, "HTTP/1.1", true)
+  end
+end
+report("log line") { request_log_line("GET", "/", 200, Span.new(nanoseconds: 1234)) }
+report("whole, without socket") do
+  req = take(WIRE)
+  c = dispatch(handler, req)
+  c.response.headers["Date"] = http_date(Time.utc)
+  c.response.headers["Connection"] = "keep-alive"
+  Tape.scope do
+    buffer = TapeWriter.new(c.response.http_capacity)
+    c.response.write_http(buffer, "HTTP/1.1", true)
+  end
+  request_log_line("GET", "/", 200, Span.new(nanoseconds: 1234))
+end

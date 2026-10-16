@@ -5,7 +5,7 @@
 # this module owns rather than `std/http`'s struct.
 module web/request
 
-import std/http::{HTTP, Server}
+import std/http::{HTTP, Server, ParsedHead, HeadError}
 import std/text
 import web/codec::*
 import web/headers::{Headers}
@@ -29,14 +29,6 @@ pub class Request
 
   # `std/http`'s request as this type: path percent-decoded, query left
   # encoded, headers in the case-insensitive table a handler writes.
-  def self.from_http(method : String, path : String, query : String?, headers : Hash(String, String), body : String, version : String = "HTTP/1.1") : Request
-    table = Headers.new
-    headers.each { |name, value| table[name] = value }
-
-    raw = path == "*" || path.empty? ? "/" : path
-    decoded = decode_path(raw)
-    Request.new(method, decoded.empty? ? "/" : decoded, query ? query : "", version, table, body)
-  end
 
   pub def method : String
     @method
@@ -95,15 +87,6 @@ pub class Request
 end
 
 # One pass of `std/http`'s parser: a request, a refusal, or "not yet".
-pub struct Incoming
-  getter request : Request?
-  getter error : String?
-  getter close : Bool
-  getter consumed : Int32
-
-  def initialize(@request : Request?, @error : String?, @close : Bool, @consumed : Int32)
-  end
-end
 
 # Split a request-target into path and query, percent-decoding the path.
 # The query is left encoded; `parse_query` is what turns it into a table,
@@ -125,45 +108,86 @@ end
 # server uses.
 pub def parse_head(block : String) : Request | ParseError
   text = block.includes?("\r\n\r\n") ? block : block + "\r\n\r\n"
-  incoming = parse_incoming(text)
-  if req = incoming.request
-    req
-  elsif err = incoming.error
-    ParseError.new(err)
-  else
-    ParseError.new("incomplete request")
+  result = ParseError.new("incomplete request").as(Request | ParseError)
+  Tape.scope do
+    case head = Server.parse_head(TapeString.new(text.to_unsafe, text.bytesize))
+    in Nil
+    in HeadError
+      result = ParseError.new(head.message)
+    in ParsedHead
+      length = 0
+      if field = head.field("Content-Length")
+        if declared = HTTP.content_length(field.to_s)
+          length = declared.to_i32
+        end
+      end
+      if text.bytesize - head.body_start >= length
+        case built = request_from(head, text[head.body_start, length])
+        in ParseError            then result = built
+        in Tuple(Request, Bool)  then result = built[0]
+        end
+      end
+    end
   end
+  result
 end
 
-pub def parse_incoming(text : String) : Incoming
-  parsed = Server.parse_request(text)
-  if req = parsed.request
-    # The server's own header table refuses a control character; one that
-    # arrived on the wire is the client's error, answered as a 400.
-    unless wire_headers_valid?(req.headers)
-      return Incoming.new(nil, "invalid header field", true, parsed.consumed)
+# The request *head* names, with *body*, and whether the client asked for
+# the connection to close; a refusal for framing `std/http` refuses. Built
+# from the head's views on the request's tape: the method, the version and
+# the fields are copied to the heap once, into what the `Request` keeps.
+pub def request_from(head : ParsedHead, body : String) : Tuple(Request, Bool) | ParseError
+  headers = Headers.new
+  head.each_heap_field { |name, value| headers.add(name, value) }
+  http10 = head.http10?
+  version = http10 ? "HTTP/1.0" : "HTTP/1.1"
+  target = head.target
+  p = target.to_unsafe
+  n = target.bytesize
+  path = ""
+  query = ""
+  if authority = HTTP.absolute_form(p, n)
+    # The absolute form (RFC 9112 §3.2.2): its authority is the host,
+    # whatever the Host line says, and the path follows it.
+    after = authority
+    while after < n && p[after] != 47_u8 && p[after] != 63_u8
+      after = after + 1
     end
-    Incoming.new(Request.from_http(req.method, req.path, req.query, req.headers, req.body, wire_version(text)), nil, parsed.close, parsed.consumed)
+    text = target.to_s
+    named = text[authority, after - authority]
+    return ParseError.new("not a host: #{named.inspect}") unless named.bytesize > 0 && HTTP.host?(named)
+    headers["Host"] = named
+    origin = text[after, n - after]
+    origin = "/" + origin if origin.bytesize == 0 || origin.starts_with?("?")
+    path, query = split_target(origin)
   else
-    Incoming.new(nil, parsed.error, parsed.close, parsed.consumed)
+    q = HTTP.byte_in(p, 0, n, 63_u8)
+    raw = TapeString.new(p, q).to_s
+    query = q < n ? TapeString.new(p + q + 1, n - q - 1).to_s : ""
+    raw = "/" if raw == "*" || raw.empty?
+    path = decode_path(raw)
+    path = "/" if path.empty?
   end
+
+  # `Connection` is a list of options (RFC 9110 §7.6.1); `close` among them
+  # closes (RFC 9112 §9.6), and HTTP/1.0 closes unless it asks otherwise.
+  close = http10
+  if conn = headers["connection"]?
+    close = HTTP.has_token?(conn, "close") || (http10 && !HTTP.has_token?(conn, "keep-alive"))
+  end
+  if te = headers["transfer-encoding"]?
+    return ParseError.new("transfer encoding #{te.inspect} is not chunked") unless HTTP.same_name?(HTTP.trim(te), "chunked")
+    # A length beside the chunks, or chunks in HTTP/1.0, is framing a
+    # reader ahead may have taken otherwise (RFC 9112 §6.1, §6.3).
+    close = true if headers.has_key?("content-length") || http10
+  elsif cl = headers["content-length"]?
+    return ParseError.new("Content-Length is not a number: #{cl.inspect}") unless HTTP.content_length(cl)
+  end
+  {Request.new(head.method.to_s, path, query, version, headers, body), close}
 end
 
 pub def with_body(request : Request, body : String) : Request
   Request.new(request.method, request.path, request.query_string, request.version, request.headers, body)
 end
 
-private def wire_headers_valid?(headers : Hash(String, String)) : Bool
-  headers.each do |name, value|
-    return false unless Headers.valid_name?(name) && Headers.valid_value?(value)
-  end
-  true
-end
 
-private def wire_version(text : String) : String
-  lines = HTTP.split_crlf(text)
-  return "HTTP/1.1" if lines.empty?
-  line = lines[0]
-  sp = line.rindex(" ")
-  sp ? line[sp + 1, line.bytesize - sp - 1] : "HTTP/1.1"
-end

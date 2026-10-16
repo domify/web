@@ -10,6 +10,8 @@
 # `Location` built from a query string becomes a second, forged header.
 module web/headers
 
+import std/http::{HTTP}
+
 pub class Headers
   @pairs : Array(Tuple(String, String))
 
@@ -17,11 +19,12 @@ pub class Headers
     @pairs = [] of Tuple(String, String)
   end
 
+  # Names are compared byte by byte, ignoring ASCII case: a lookup makes
+  # no lowercase copies.
   pub def []?(name : String) : String?
-    key = name.downcase
     found = nil
     @pairs.each do |pair|
-      found = pair[1] if pair[0].downcase == key
+      found = pair[1] if HTTP.same_name?(pair[0], name)
     end
     found
   end
@@ -32,10 +35,9 @@ pub class Headers
 
   pub def []=(name : String, value : String) : String
     check(name, value)
-    key = name.downcase
     index = 0
     while index < @pairs.size
-      if @pairs[index][0].downcase == key
+      if HTTP.same_name?(@pairs[index][0], name)
         @pairs[index] = {name, value}
         return value
       end
@@ -91,10 +93,9 @@ pub class Headers
   end
 
   pub def delete(name : String) : Nil
-    key = name.downcase
     kept = [] of Tuple(String, String)
     @pairs.each do |pair|
-      kept << pair unless pair[0].downcase == key
+      kept << pair unless HTTP.same_name?(pair[0], name)
     end
     @pairs = kept
   end

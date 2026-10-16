@@ -1,0 +1,71 @@
+# The ceiling for bench/app.ri: the same two answers, `/` and `/page`, from
+# a loop on std/socket with no framework. It reads onto the stack, finds
+# the head's end and the path, and writes a response prepared at start.
+# Keep-alive only; anything else closes the connection.
+module bench/raw
+
+import std/socket::{IyiSocket}
+import std/text
+import std/int
+
+PAGE = "<p>ris web</p>\n" * 2730
+
+def response(type : String, body : String) : String
+  "HTTP/1.1 200 OK\r\nContent-Type: #{type}\r\nContent-Length: #{body.bytesize}\r\nConnection: keep-alive\r\n\r\n#{body}"
+end
+
+HELLO_RESPONSE = response("text/html; charset=utf-8", "Hello World!")
+PAGE_RESPONSE  = response("text/html; charset=utf-8", PAGE)
+
+def serve(sock : IyiSocket) : Nil
+  buffer = uninitialized UInt8[16384]
+  p = pointerof(buffer).as(UInt8*)
+  filled = 0
+  while true
+    got = sock.read(p + filled, 16384 - filled)
+    break unless got.is_a?(Int32) && got > 0
+    filled = filled + got
+    # Every complete head in the buffer gets its answer.
+    start = 0
+    i = 0
+    while i + 3 < filled
+      if p[i] == 13_u8 && p[i + 1] == 10_u8 && p[i + 2] == 13_u8 && p[i + 3] == 10_u8
+        # "GET /page" has `p` at the sixth byte.
+        answer = p[start + 5] == 112_u8 ? PAGE_RESPONSE : HELLO_RESPONSE
+        break unless sock.write(answer).is_a?(Int32)
+        start = i + 4
+        i = start
+      else
+        i = i + 1
+      end
+    end
+    if start > 0
+      k = 0
+      while k < filled - start
+        p[k] = p[start + k]
+        k = k + 1
+      end
+      filled = filled - start
+    end
+    break if filled == 16384
+  end
+  sock.close
+end
+
+def spawn_serve(g : IyiGroup, sock : IyiSocket) : Nil
+  g.spawn do
+    serve(sock)
+    0
+  end
+end
+
+args = Program.args
+port = (args.size > 1 ? args[1] : "3999").to_i
+listener = IyiSocket.listen("127.0.0.1", port)
+group do |g|
+  while !listener.closed?
+    client = listener.accept
+    spawn_serve(g, client) if client.is_a?(IyiSocket)
+  end
+  0
+end

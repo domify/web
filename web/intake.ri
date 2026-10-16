@@ -7,7 +7,9 @@
 # a buffer that grows by doubling instead, the head's end is searched for
 # only in what is new, and `std/http`'s parser runs once the request is
 # whole: when `Content-Length` bytes have followed the head, or when a
-# chunked body's last chunk has arrived. A chunked body is decoded here as
+# chunked body's last chunk has arrived. `Server.parse_head` reads the head
+# on the request's tape, where its bytes are, and the `Request` is built
+# from its views. A chunked body is decoded here as
 # it arrives, since `std/http` decodes one by concatenating its chunks.
 #
 # The framing is read from the head the way `std/http` reads it, and what
@@ -20,8 +22,8 @@
 # - the `Request`, the bytes after it - is copied out as heap strings.
 module web/intake
 
-import std/http::{HTTP}
-import web/request::{Request, ParseError, parse_incoming, with_body}
+import std/http::{HTTP, Server, ParsedHead, HeadError}
+import web/request::{Request, ParseError, request_from}
 import std/text
 
 # `std/http`'s bound on a request's head.
@@ -52,6 +54,7 @@ pub struct Intake
   @state : Int32
   @remaining : Int32
   @continue : Bool
+  @declared : Int32
 
   # *leftover* is what the connection's last request left unread.
   def initialize(leftover : String, @max_body : Int32)
@@ -65,6 +68,7 @@ pub struct Intake
     @state = SIZE_LINE
     @remaining = 0
     @continue = false
+    @declared = 0
     append(leftover)
   end
 
@@ -106,18 +110,17 @@ pub struct Intake
 
   private def take_sized : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
     return nil if @bytes.length < @need
-    text = copy(@bytes, 0, @bytes.length)
-    incoming = parse_incoming(text)
-    if req = incoming.request
-      return TooLarge.new if req.body.bytesize > @max_body
-      return {req, text[incoming.consumed, text.bytesize - incoming.consumed], incoming.close}
+    body_end = 0
+    case head = Server.parse_head(@bytes.finish)
+    in Nil
+      return nil
+    in HeadError
+      return ParseError.new(head.message)
+    in ParsedHead
+      body_end = head.body_start + @declared
+      body = @declared > 0 ? copy(@bytes, head.body_start, @declared) : ""
+      finish(request_from(head, body), body_end)
     end
-    if reason = incoming.error
-      return ParseError.new(reason)
-    end
-    # The parser wants more than the framing said: let it decide from here.
-    @need = @bytes.length + 1
-    nil
   end
 
   private def take_chunked : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
@@ -129,13 +132,25 @@ pub struct Intake
     in TooLarge
       ended
     in Int32
-      # The head is parsed with an empty chunked body after it, so the
-      # parser checks it as it would any; the body is the one decoded here.
-      incoming = parse_incoming(copy(@bytes, 0, @head_end + 4) + "0\r\n\r\n")
-      if req = incoming.request
-        return {with_body(req, copy(@body, 0, @body.length)), copy(@bytes, ended, @bytes.length - ended), incoming.close}
+      case head = Server.parse_head(@bytes.finish)
+      in Nil
+        ParseError.new("incomplete request")
+      in HeadError
+        ParseError.new(head.message)
+      in ParsedHead
+        finish(request_from(head, copy(@body, 0, @body.length)), ended)
       end
-      ParseError.new(incoming.error || "incomplete request")
+    end
+  end
+
+  # The request with what the client sent after it, from *at* on.
+  private def finish(built : Tuple(Request, Bool) | ParseError, at : Int32) : Tuple(Request, String, Bool) | ParseError
+    case built
+    in ParseError
+      built
+    in Tuple(Request, Bool)
+      rest = at < @bytes.length ? copy(@bytes, at, @bytes.length - at) : ""
+      {built[0], rest, built[1]}
     end
   end
 
@@ -210,7 +225,8 @@ pub struct Intake
     # Not a length: the parser refuses it.
     return nil unless declared && declared >= 0
     return TooLarge.new if declared > @max_body.to_i64
-    @need = body_start + declared.to_i32
+    @declared = declared.to_i32
+    @need = body_start + @declared
     @continue = expects && declared > 0
     nil
   end
