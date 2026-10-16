@@ -9,6 +9,27 @@ pub def http_date(time : Time) : String
   weekday_name(time.day_of_week) + ", " + pad2(time.day) + " " + month_name(time.month) + " " + time.year.to_s + " " + pad2(time.hour) + ":" + pad2(time.minute) + ":" + pad2(time.second) + " GMT"
 end
 
+# The `Date` of a response sent now. It is formatted once a second, not
+# for every response: formatting was a tenth of a request's time. Two
+# fibers that race here at a second's turn answer either second.
+pub def current_http_date : String
+  DateClock.now
+end
+
+class DateClock
+  @@second = -1_i64
+  @@text = ""
+
+  def self.now : String
+    now = Time.utc
+    second = now.to_unix
+    return @@text if second == @@second
+    @@text = http_date(now)
+    @@second = second
+    @@text
+  end
+end
+
 # `Sun, 06 Nov 1994 08:49:37 GMT` as a Time, or nil for anything else.
 pub def parse_http_date(text : String) : Time?
   parts = text.strip.split(' ')

@@ -74,7 +74,7 @@ report("intake + parse_head + Request") { take(WIRE) }
 report("Context.for") { Context.for(request) }
 report("Context + router + handler") { dispatch(handler, request) }
 ctx = dispatch(handler, request)
-report("Date header") { ctx.response.headers["Date"] = http_date(Time.utc) }
+report("Date header") { ctx.response.headers["Date"] = current_http_date }
 report("serialise onto tape") do
   Tape.scope do
     buffer = TapeWriter.new(ctx.response.http_capacity)
@@ -85,7 +85,7 @@ report("log line") { request_log_line("GET", "/", 200, Span.new(nanoseconds: 123
 report("whole, without socket") do
   req = take(WIRE)
   c = dispatch(handler, req)
-  c.response.headers["Date"] = http_date(Time.utc)
+  c.response.headers["Date"] = current_http_date
   c.response.headers["Connection"] = "keep-alive"
   Tape.scope do
     buffer = TapeWriter.new(c.response.http_capacity)

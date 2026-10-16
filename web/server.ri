@@ -426,7 +426,7 @@ pub class Server
       ctx.response.headers["X-Powered-By"] = "web"
     end
     unless ctx.response.headers.has_key?("Date")
-      ctx.response.headers["Date"] = http_date(Time.utc)
+      ctx.response.headers["Date"] = current_http_date
     end
   end
 
