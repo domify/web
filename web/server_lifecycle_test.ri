@@ -319,6 +319,27 @@ describe "Server connections" do
 end
 
 describe "Server addresses" do
+  it "shares a port between servers that bind with reuse_port" do
+    # The kernel may hand any connection to either listener, so both serve.
+    [{"127.0.0.1", "127.0.0.1"}, {"::1", "::1"}, {"[::1]", "::1"}].each do |host, address|
+      first = Server.new(chain([RouteHandler.new(router)]), quiet_config)
+      port = first.bind(host, 0, reuse_port: true)
+      second = Server.new(chain([RouteHandler.new(router)]), quiet_config)
+      assert second.bind(host, port, reuse_port: true) == port
+      serve(first) do |running|
+        serve(second) do |also|
+          10.times do
+            client = IyiSocket.connect(address, port).or_panic
+            client.write("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").or_panic
+            answer = read_all(client)
+            client.close
+            assert http_body(answer) == "home"
+          end
+        end
+      end
+    end
+  end
+
   it "serves on IPv6 loopback, bare and bracketed" do
     ["::1", "[::1]"].each do |host|
       server = Server.new(chain([RouteHandler.new(router)]), quiet_config)

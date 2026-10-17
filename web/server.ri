@@ -48,6 +48,26 @@ import web/http_date::*
 # What one read off a connection takes, onto the connection's stack.
 READ_SIZE = 16384
 
+lib LibReusePort
+  fun setsockopt(fd : Int32, level : Int32, optname : Int32, optval : Void*, optlen : UInt32) : Int32
+end
+
+# `IyiSocket.listen` plus `SO_REUSEPORT` (SOL_SOCKET 1, option 15 on
+# Linux). std/socket has no option for it yet (once-campfire-ris's
+# upstream.md); until it does, the socket is built here by hand.
+pub def listen_reuse_port(host : String, port : Int32) : IyiSocket
+  addr, family = IyiSocket.sockaddr(host, port)
+  fd = IyiSocket.__sys_socket(family)
+  raise "cannot create socket" if fd < 0
+  IyiSocket.__sys_set_reuseaddr(fd)
+  one = 1_i32
+  LibReusePort.setsockopt(fd, 1, 15, pointerof(one).as(Void*), 4_u32)
+  raise "cannot bind #{host}:#{port}" if IyiSocket.__sys_bind(fd, addr, family) < 0
+  raise "cannot listen" if IyiSocket.__sys_listen(fd, 1024) < 0
+  IyiSocket.__sys_set_nonblock(fd)
+  IyiSocket.new(fd, family)
+end
+
 pub class Server
   @handler : Handler
   @config : Config
@@ -78,8 +98,11 @@ pub class Server
     @stopped = Channel(Int32).new
   end
 
-  pub def bind(host : String, port : Int32) : Int32
-    listener = IyiSocket.listen(host, port)
+  # With *reuse_port* the socket sets `SO_REUSEPORT` before it binds, so
+  # several servers - one per kernel thread or process - listen on the
+  # same port and the kernel spreads the connections across them.
+  pub def bind(host : String, port : Int32, reuse_port : Bool = false) : Int32
+    listener = reuse_port ? listen_reuse_port(host, port) : IyiSocket.listen(host, port)
     @socket = listener
     @host = host
     @port = listener.local_port
