@@ -1,8 +1,13 @@
 # web
 
-A web framework for [ris](https://github.com/rislang/ris), ported from
-[iyi-web](https://github.com/sdogruyol/iyi-web). The git history keeps the
-original authors and the iyi code it started from.
+A Sinatra-style web framework for [ris](https://github.com/rislang/ris),
+built on tape memory: every request runs on its own tape, from its first
+byte to the last byte of its response, and all of it is freed at once when
+the response is sent. An application does nothing for it; routes return
+strings as usual. See [Memory](#memory) for how and what it saves.
+
+Ported from [iyi-web](https://github.com/sdogruyol/iyi-web); the git
+history keeps the original authors and the iyi code it started from.
 
 ```ris
 module app
@@ -22,6 +27,7 @@ a route returns is checked when the program compiles.
 
 ## Features
 
+- Each request on its own tape, freed at once: no collector work for it
 - Routes for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `HEAD` and
   `QUERY`, with named and wildcard path segments
 - URL, query-string, form, JSON and `multipart/form-data` parameters, with
@@ -1011,29 +1017,67 @@ cd demo && ris run app.ri
 
 ## Memory
 
-A request lives in its own `Tape.scope`, from its first bytes to the last
-byte of its response:
+ris's tape memory is one mapping per fiber that values are bumped into and
+freed together with one store when their `Tape.scope` ends. web gives each
+request one:
 
-- The connection waits for the request on its stack, with no tape: an idle
-  keep-alive connection holds none.
-- The bytes are read onto the tape, and the framing (`Content-Length`,
-  `Transfer-Encoding`, `Expect`) is read from them in place.
-- The handler runs on heap objects, as before. The request, its context and
-  parameters and the response it writes are classes that application code
-  keeps and changes, and tape memory may not be a class's field. The parser
-  in `std/http` makes them from one heap copy of the request.
+- The connection waits for a request on its stack, with no tape, so an
+  idle keep-alive connection holds none.
+- The request's bytes are read onto the tape. `std/http`'s `parse_head`
+  reads the request line and the fields in place, as views into those
+  bytes, and the framing (`Content-Length`, `Transfer-Encoding`, `Expect`)
+  is read from them. Nothing of the head is copied to parse it.
+- The handler runs on heap objects: the request, its context and
+  parameters and the response are classes that application code keeps
+  and changes, and a tape value may not be a class's field. They are made
+  from the views, copying only what they keep.
 - The status line, the headers and the body of a buffered response are
-  written onto the tape and sent in one write.
+  written onto the tape and sent in one write. The `Date` header is
+  formatted once a second, reading the clock through the vDSO.
 
-All of it goes when the scope ends. `bench/run.sh`, 64 keep-alive
-connections with `ab`, median of seven interleaved runs, 16-core Linux,
-2026-10-16:
+A browser's request in-process (`ris run --release bench/stages.ri`, no
+socket, fastest of seven, one core), step by step:
 
-| | heap only | response on tape | request on tape |
-|---|---|---|---|
-| `/`, 12 bytes | 42,961 req/s | 44,604 req/s | 47,477 req/s (+10.5%) |
-| `/page`, 40 KB | 30,325 req/s | 33,687 req/s | 35,982 req/s (+19%) |
-| Peak RSS | 12.5 MB | 10.6 MB | 11.6 MB (-7%) |
+| Step | Time | Heap |
+|---|---|---|
+| Ported, heap only | 10,797 ns | 6,196 B |
+| Head parsed on the tape (`parse_head`) | 5,799 ns | 2,489 B |
+| Framing from the parsed head, `Date` once a second | 4,145 ns | — |
+| Clock through the vDSO | 3,840 ns | — |
+| Compiled with LLVM 23 | 3,459 ns | 2,069 B |
+
+Over a socket (`bench/run.sh`, 64 keep-alive connections with `ab`,
+median of seven, 16-core Linux, 2026-10-16), the response and then the
+request on tape gave +10.5% requests per second on a 12-byte page, +19% on
+a 40 KB page and -7% peak RSS.
+
+### Your own work on the request's tape
+
+A handler already runs inside the request's `Tape.scope`, and a nested
+`Tape.scope` shares that tape at no cost. Work that makes many short-lived
+pieces, such as a large page, can build on it and copy only the result to
+the heap:
+
+```ris
+get "/report" do |env|
+  page = ""
+  Tape.scope do
+    html = TapeWriter.new(8192)
+    ROWS.each do |row|
+      html.append("<tr><td>")
+      html.append_html_escaped(row.name)
+      html.append("</td></tr>")
+    end
+    page = html.finish.to_s
+  end
+  page
+end
+```
+
+A 200-row table built this way took 16,700 ns and 10.6 KB of heap, against
+51,600 ns and 67 KB with `String.build` and `HTML.escape`. A tape value
+may not leave its scope: copy what you keep with `to_s`, into a variable of
+the code around the scope.
 
 `Response#to_http` returns a response's bytes as a `String`, for tests and
 code that keeps them.
