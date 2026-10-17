@@ -23,6 +23,10 @@ bench/run.sh 5        # requests per second and peak RSS, --release
   templates, JSON) takes the request's bytes as `TapeString` and writes
   into its `TapeWriter`, and opens no tape of its own. Copy to the heap
   only what a handler keeps. ris's CLAUDE.md has the whole model.
+- No raw pointers in the handler API (no `send(pointer, count)`): a
+  handler hands the response a `TapeString` or writes into a
+  `TapeWriter`, and only the server takes `to_unsafe`, at the socket write.
+  The tape checker does not follow a pointer out of its scope.
 - Every line is at most 80 characters in documents and commit messages.
 
 ## Commits

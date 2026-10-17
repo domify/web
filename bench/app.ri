@@ -1,4 +1,6 @@
-# The server benchmarked by bench/run.sh: a small answer and a 40 KB one.
+# The server benchmarked by bench/run.sh: a small answer and a 40 KB one,
+# and a 40 KB page rendered on the request's tape for each request, then
+# copied to the heap (`/render`) or sent from the tape (`/send`).
 module bench/app
 
 import web/dsl::*
@@ -12,6 +14,36 @@ end
 get "/page" do |env|
   env.response.content_type = "text/html; charset=utf-8"
   PAGE
+end
+
+ROWS = (1..1000).map { |i| "row <#{i}> & co" }
+
+# About 40 KB of rows, escaped, onto the request's tape.
+def render_rows(html : TapeWriter) : Nil
+  ROWS.each do |row|
+    html.append("<tr><td>")
+    html.append_html_escaped(row)
+    html.append("</td></tr>")
+  end
+end
+
+get "/render" do |env|
+  env.response.content_type = "text/html; charset=utf-8"
+  page = ""
+  Tape.scope do
+    html = TapeWriter.new(48_000)
+    render_rows(html)
+    page = html.finish.to_s
+  end
+  page
+end
+
+get "/send" do |env|
+  env.response.content_type = "text/html; charset=utf-8"
+  html = TapeWriter.new(48_000)
+  render_rows(html)
+  env.response.send(html.finish)
+  nil
 end
 
 run

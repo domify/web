@@ -7,9 +7,12 @@
 # printed since. On HTTP/1.1 a flushed body is sent chunked, unless the
 # handler set `Content-Length`; on HTTP/1.0 it runs until the connection
 # closes. Headers changed after the first `flush` are not sent.
+#
+# `send` writes a body that is on the request's tape straight to the
+# socket, before the handler returns, so it is never copied to the heap.
 module web/response
 
-import std/socket::{IyiSocket}
+import std/socket::{IyiSocket, SocketError}
 import web/headers::{Headers}
 import web/status::*
 
@@ -20,6 +23,7 @@ pub class Response
   @closed : Bool
   @content_type : String
   @sink : Proc(String, Nil)?
+  @socket : IyiSocket?
   @version : String
   @keepalive : Bool
   @head : Bool
@@ -34,6 +38,7 @@ pub class Response
     @closed = false
     @content_type = "text/html; charset=utf-8"
     @sink = nil
+    @socket = nil
     @version = "HTTP/1.1"
     @keepalive = true
     @head = false
@@ -112,6 +117,68 @@ pub class Response
     @version = version
     @keepalive = keepalive
     @head = head
+  end
+
+  # The same, with the client's socket, which `send` writes to.
+  pub def attach(sink : Proc(String, Nil), socket : IyiSocket, version : String, keepalive : Bool, head : Bool) : Nil
+    @socket = socket
+    attach(sink, version, keepalive, head)
+  end
+
+  # Sends *text*, on the request's tape, as the body, now: the status line
+  # and headers first if they have not gone, with a `Content-Length` of the
+  # body printed so far plus *text* when no length was set and nothing was
+  # flushed. *text* goes to the socket from where it is and is not kept, so
+  # it needs to live only until this returns. Headers set after it are not
+  # sent. Without a socket attached it is copied into the body instead.
+  pub def send(text : TapeString) : Nil
+    socket = @socket
+    unless socket
+      print(text.to_s)
+      return
+    end
+    if !@headers_sent && !@headers.has_key?("Content-Length") && !no_entity?
+      @headers["Content-Length"] = (@body.bytesize + text.bytesize).to_s
+    end
+    # The head, what was printed before and *text* go in one write:
+    # written apart, the second write waits on the client's delayed ACK
+    # (Nagle), 40 ms a response. *text* goes from where it is; a chunk,
+    # which needs its CRLF after it, is joined on the tape.
+    head = !@headers_sent
+    settle_stream_head if head
+    @headers_sent = true
+    body = !(@head || no_entity?) && (@body.bytesize + text.bytesize) > 0
+    pending = body ? @body : ""
+    @body = ""
+    framed = body && @chunked
+    count = (head ? 64 + @headers.bytesize : 0) + pending.bytesize
+    prefix = TapeWriter.new(count + (framed ? 32 + text.bytesize : 0))
+    if head
+      prefix.append(@version)
+      prefix.push(32_u8)
+      prefix.append_int(@status_code)
+      prefix.push(32_u8)
+      prefix.append(phrase(@status_code))
+      prefix.append("\r\n")
+      @headers.write(prefix)
+      prefix.append("\r\n")
+    end
+    prefix.append((pending.bytesize + text.bytesize).to_s(16) + "\r\n") if framed
+    prefix.append(pending)
+    if framed
+      prefix.append(text)
+      prefix.append("\r\n")
+    end
+    # Closed under the task by a cut-off at shutdown, as the server's own
+    # writes are: the panic stops the handler.
+    raise "the connection was cut off at shutdown" if socket.closed?
+    rest = body && !framed ? text : TapeString.build(0) { |_| nil }
+    case wrote = socket.write(prefix.finish, rest)
+    in Cancelled
+    in SocketError
+      raise wrote.message
+    in Int32
+    end
   end
 
   # Sends what has been printed so far and keeps the response open.
@@ -207,6 +274,13 @@ pub class Response
   end
 
   private def stream_head : String
+    settle_stream_head
+    @version + " " + @status_code.to_s + " " + phrase(@status_code) + "\r\n" + @headers.to_s + "\r\n"
+  end
+
+  # The headers a streamed response is sent with: its type, its framing and
+  # whether the connection stays open.
+  private def settle_stream_head : Nil
     unless @headers.has_key?("Content-Type") || no_entity?
       @headers["Content-Type"] = @content_type
     end
@@ -215,7 +289,6 @@ pub class Response
     unless @headers.has_key?("Connection")
       @headers["Connection"] = @keepalive && reusable? ? "keep-alive" : "close"
     end
-    @version + " " + @status_code.to_s + " " + phrase(@status_code) + "\r\n" + @headers.to_s + "\r\n"
   end
 
   private def chunk(text : String) : String

@@ -130,4 +130,12 @@ describe "Response" do
     head.finish
     assert heads.size == 1
   end
+
+  it "copies a sent body into the body when no server is attached" do
+    res = Response.new
+    Tape.scope do
+      res.send(TapeString.build(8) { |buf| buf.append("plain") })
+    end
+    assert res.body == "plain"
+  end
 end

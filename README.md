@@ -434,6 +434,28 @@ end
 
 Headers changed after the first `flush` are not sent.
 
+### Sending from the tape
+
+A page rendered onto the request's tape goes out with
+`env.response.send(text : TapeString)`, straight from the tape and never
+copied to the heap. The server opens the tape for each request, so the
+route opens none:
+
+```ris
+get "/page" do |env|
+  page = TapeString.build(4096) { |buf| render_page(buf) }
+  env.response.send(page)
+  nil
+end
+```
+
+`send` writes the status line and headers, with the `Content-Length`, at
+once. So middleware that runs after the route can still read the status, as
+`Log` does, but can't change the headers or the body. `Compress` leaves a
+sent body as it is. Set headers before `send`, compress at the proxy
+(Thruster, nginx), and answer `304` before rendering, from what the page is
+made of rather than from its body.
+
 ### Server-sent events
 
 ```ris
@@ -1050,6 +1072,17 @@ Over a socket (`bench/run.sh`, 64 keep-alive connections with `ab`,
 median of seven, 16-core Linux, 2026-10-16), the response and then the
 request on tape gave +10.5% requests per second on a 12-byte page, +19% on
 a 40 KB page and -7% peak RSS.
+
+A page rendered on the request's tape for each request (`bench/run.sh 7
+/render /send`, a 42 KB table of 1,000 escaped rows, median of seven,
+interleaved, 2026-10-17): copied to the heap with `to_s` and returned,
+19,706 requests per second; sent from the tape with `Response#send`,
+24,632 (+25%). Peak RSS is 10.9 MB against 10.2 MB: each connection's
+tape holds its page until the response is out. `send` hands the socket
+the head and the page as two pieces of one write (`IyiSocket#write(first,
+second)`, a `sendmsg`), so the page is not copied. Written apart, the
+page waited on the client's delayed ACK: 1,586 requests per second.
+Joined in one buffer on the tape, 23,349 and 11.1 MB.
 
 ### Your own work on the request's tape
 

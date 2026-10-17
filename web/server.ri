@@ -378,7 +378,9 @@ pub class Server
     exchange.context = ctx
     exchange.started = Time.monotonic
     head = HTTP.same_name?(request.method, "HEAD")
-    ctx.response.attach(->(bytes : String) { write_raw(client, bytes) }, wire_version(request), keepalive, head)
+    ctx.response.attach(->(bytes : String) { write_raw(client, bytes) },
+      client,
+      wire_version(request), keepalive, head)
     stamp(ctx)
     @handler.call(ctx)
     if upgrade = ctx.response.upgrade_handler

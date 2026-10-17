@@ -67,6 +67,11 @@ router.get "/json" do |env|
   env.response.content_type = "application/json"
   "{}"
 end
+router.get "/tape" do |env|
+  # On the tape of the request, which the server opened.
+  env.response.send(TapeString.build(16) { |buf| buf.append("from the tape") })
+  ""
+end
 router.post "/echo" do |env|
   env.request.body
 end
@@ -146,6 +151,16 @@ group do |g|
         if dated = date
           assert dated.includes?("GMT")
         end
+      end
+
+      it "sends a body from the request's tape with its length" do
+        sent = exchange(port, close_request("GET", "/tape"))
+        assert status_line(sent) == "HTTP/1.1 200 OK"
+        assert http_header(sent, "Content-Length") == "13"
+        assert http_body(sent) == "from the tape"
+        head = exchange(port, close_request("HEAD", "/tape"))
+        assert http_header(head, "Content-Length") == "13"
+        assert http_body(head) == ""
       end
 
       it "percent-decodes a url param over TCP" do
