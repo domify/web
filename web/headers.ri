@@ -60,9 +60,10 @@ pub class Headers
     @pairs.each { |pair| yield pair[0], pair[1] }
   end
 
+  # On the caller's tape when there is one, as a request's is.
   pub def to_s : String
     text = ""
-    Tape.local do
+    Tape.scope do
       buffer = TapeWriter.new(bytesize)
       write(buffer)
       text = buffer.finish.to_s
