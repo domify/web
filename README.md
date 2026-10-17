@@ -1000,6 +1000,15 @@ ris run examples/json_api.ri -- -p 8080
 Each file's opening comment lists `curl` commands to try. `ris test examples`
 runs the example test.
 
+`demo/` is a whole application as another project writes it: its own
+`ris.mod` requires web under the short name `web`, and a `replace` line
+builds it from this checkout. A guestbook with a form, a template, a JSON
+API and a stylesheet:
+
+```sh
+cd demo && ris run app.ri
+```
+
 ## Memory
 
 A request lives in its own `Tape.scope`, from its first bytes to the last

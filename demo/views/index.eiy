@@ -1,0 +1,11 @@
+<h1>Guestbook</h1>
+<form method="post" action="/notes">
+  <input name="name" placeholder="Name">
+  <input name="text" placeholder="Say hello" required>
+  <button>Sign</button>
+</form>
+<ul>
+<% notes.reverse_each do |note| -%>
+<li><b><%= HTML.escape(note.name) %></b>: <%= HTML.escape(note.text) %></li>
+<% end -%>
+</ul>

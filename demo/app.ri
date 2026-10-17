@@ -1,0 +1,55 @@
+# A guestbook: a page with a form, a JSON API and a stylesheet, built on web
+# as another project would use it (see ris.mod). Run with `ris run app.ri`
+# in this directory and open http://localhost:3000.
+#
+#   curl localhost:3000/api/notes
+#   curl -d 'name=Ada&text=Hello' localhost:3000/notes
+module app
+
+import std/html::{HTML}
+import std/indexable
+import std/json::{ToJSON, Builder}
+import web/web/dsl::*
+
+class Note
+  getter name : String
+  getter text : String
+
+  def initialize(@name : String, @text : String)
+  end
+end
+
+impl ToJSON for Note
+  def to_json(json : Builder) : Nil
+    json.object do
+      json.field("name", @name)
+      json.field("text", @text)
+    end
+  end
+end
+
+NOTES = [] of Note
+
+public_folder "public"
+
+get "/" do |env|
+  notes = NOTES
+  render "views/index.eiy", "views/layout.eiy"
+end
+
+post "/notes" do |env|
+  name = (env.params.body["name"]? || "").strip
+  text = (env.params.body["text"]? || "").strip
+  if text.empty?
+    env.halt(422, "Write something first")
+  else
+    NOTES << Note.new(name.empty? ? "Anonymous" : name, text)
+    env.redirect("/")
+  end
+end
+
+get "/api/notes" do |env|
+  env.json(NOTES)
+end
+
+run
