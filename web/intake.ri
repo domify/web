@@ -29,7 +29,7 @@
 module web/intake
 
 import std/http::{HTTP, Server, ParsedHead, HeadError, Field}
-import web/request::{Request, ParseError, request_from}
+import web/request::{Request, ParseError, request_from, content_length}
 import std/text
 
 # `std/http`'s bound on a request's head.
@@ -255,7 +255,7 @@ pub struct Intake
     end
     return no_body unless length
     return ParseError.new("Content-Length given twice, differently") if lengths_differ
-    declared = HTTP.content_length(length.value.to_s)
+    declared = content_length(length.value)
     # Not a length: `request_from` refuses it.
     return no_body unless declared
     return TooLarge.new if declared > max_body.to_i64
@@ -393,8 +393,9 @@ pub struct Intake
   end
 
 
-
-
+  # Where bytes leave the request's tape: the body, for the `Request` the
+  # handler keeps, and what follows the request, for the connection's next.
+  @[Escape]
   private def copy(buffer : Tape::String::Writer, from : Int32, count : Int32) : String
     buffer.finish[from, count].to_s
   end

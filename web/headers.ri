@@ -66,7 +66,9 @@ pub class Headers
     @pairs.each { |pair| yield pair[0], pair[1] }
   end
 
-  # On the caller's tape when there is one, as a request's is.
+  # On the caller's tape when there is one, as a request's is; the
+  # `String` API beside `write`, so the block leaves the tape here.
+  @[Escape]
   pub def to_s : String
     text = ""
     tape do

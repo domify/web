@@ -89,6 +89,13 @@ pub class Response
     print(text)
   end
 
+  # Without a socket (a response a test reads) the text is kept in the
+  # body, on the heap: it leaves the tape here.
+  @[Escape]
+  private def keep(text : Tape::String) : Nil
+    print(text.to_s)
+  end
+
   pub def set_body(text : String) : Nil
     @body = text
   end
@@ -134,7 +141,7 @@ pub class Response
   pub def send(text : Tape::String) : Nil
     socket = @socket
     unless socket
-      print(text.to_s)
+      keep(text)
       return
     end
     if !@headers_sent && !@headers.has_key?("Content-Length") && !no_entity?
@@ -214,7 +221,9 @@ pub class Response
   # connection has a frame; a handler that already set one is left alone.
   # HEAD omits the body (RFC 9110 §9.3.2) but keeps the length a GET of the
   # same resource would have advertised. 1xx, 204 and 304 carry neither a
-  # body nor a Content-Type.
+  # body nor a Content-Type. The `String` API beside `write_http`: the
+  # bytes leave the tape here.
+  @[Escape]
   pub def to_http(version : String, include_body : Bool = true) : String
     text = ""
     local_tape do

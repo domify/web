@@ -103,6 +103,56 @@ pub def split_target(target : String) : Tuple(String, String)
   end
 end
 
+# `HTTP.content_length` read where the field lies: every comma-separated
+# part spelled as the first (RFC 9112 §6.3), digits only (RFC 9110
+# §8.6), and one past 2147483647 for any larger.
+pub def content_length(value : Tape::String) : Int64?
+  first_from = -1
+  first_to = -1
+  start = 0
+  while start <= value.bytesize
+    stop = start
+    while stop < value.bytesize && value[stop] != 44_u8
+      stop = stop + 1
+    end
+    from = start
+    while from < stop && (value[from] == 32_u8 || value[from] == 9_u8)
+      from = from + 1
+    end
+    to = stop
+    while to > from && (value[to - 1] == 32_u8 || value[to - 1] == 9_u8)
+      to = to - 1
+    end
+    if first_from < 0
+      first_from = from
+      first_to = to
+    else
+      return nil unless to - from == first_to - first_from
+      i = 0
+      while i < to - from
+        return nil unless value[from + i] == value[first_from + i]
+        i = i + 1
+      end
+    end
+    start = stop + 1
+  end
+  return nil unless first_to > first_from
+  n = 0_i64
+  i = first_from
+  while i < first_to
+    byte = value[i]
+    return nil unless byte >= 48_u8 && byte <= 57_u8
+    i = i + 1
+  end
+  i = first_from
+  while i < first_to
+    n = n * 10_i64 + (value[i] - 48_u8).to_i64
+    return 2147483648_i64 if n > 2147483647_i64
+    i = i + 1
+  end
+  n
+end
+
 # A complete request off the wire, or why not. Headers-only text is
 # completed with a blank line so a unit test can share the parser the
 # server uses.
@@ -117,7 +167,7 @@ pub def parse_head(block : String) : Request | ParseError
     in ParsedHead
       length = 0
       if field = head.field("Content-Length")
-        if declared = HTTP.content_length(field.to_s)
+        if declared = content_length(field)
           length = declared.to_i32
         end
       end
@@ -136,6 +186,7 @@ end
 # the connection to close; a refusal for framing `std/http` refuses. Built
 # from the head's views on the request's tape: the method, the version and
 # the fields are copied to the heap once, into what the `Request` keeps.
+@[Escape]
 pub def request_from(head : ParsedHead, body : String) : Tuple(Request, Bool) | ParseError
   headers = Headers.new
   head.each_heap_field { |name, value| headers.add(name, value) }
