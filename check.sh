@@ -3,5 +3,5 @@
 set -eu
 cd "$(dirname "$0")"
 RIS="${RIS:-ris}"
-export IYI_PATH="$PWD:$("$RIS" env RIS_PATH)"
+export IYI_PATH="$PWD:$("$RIS" env IYI_PATH)"
 "$RIS" test

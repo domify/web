@@ -9,19 +9,20 @@ import web/spec::*
 STEPS = [1, 2, 3, 7, 64, 4096]
 
 # Feeds *wire* to an intake *step* bytes at a time, as reads would bring it,
-# and answers the first thing `take` gives back. An intake's bytes are on
-# the tape, as the server's are.
+# until it is `ready`, and answers what `take` then gives back, as the
+# server's read loop does. An intake's bytes are on the tape, as the
+# server's are.
 def feed(wire : String, step : Int32, max_body : Int32 = 1024) : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
   result = nil.as(Tuple(Request, String, Bool) | ParseError | TooLarge | Nil)
   Tape.scope do
     intake = Intake.new("", max_body)
     at = 0
-    while at < wire.bytesize && result.nil?
+    while at < wire.bytesize && intake.ready == false
       size = step < wire.bytesize - at ? step : wire.bytesize - at
       intake.append(wire[at, size])
       at = at + size
-      result = intake.take
     end
+    result = intake.take
   end
   result
 end

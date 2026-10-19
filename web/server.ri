@@ -521,10 +521,11 @@ pub class Server
     intake.append(start, count) if count > 0
     limit = milliseconds(@config.read_timeout)
     since = first ? conn.accepted : Time.monotonic
+    # Only the request's bytes grow in this loop; `take` parses them after.
     loop do
-      if taken = intake.take
-        return taken
-      end
+      ready = intake.ready
+      break if ready == true
+      return ready if ready.is_a?(ParseError) || ready.is_a?(TooLarge)
 
       return Closed.new if client.closed?
       if intake.continue_due?
@@ -564,6 +565,7 @@ pub class Server
         intake.append(start, got)
       end
     end
+    intake.take || ParseError.new("incomplete request")
   end
 
   private def elapsed_ms(since : Span) : Int64
