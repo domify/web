@@ -19,6 +19,12 @@ pub class Headers
     @pairs = [] of Tuple(String, String)
   end
 
+  # The fields as they came, name and value, in order: for a layer above
+  # that keeps them as they are rather than copying them.
+  pub def pairs : Array(Tuple(String, String))
+    @pairs
+  end
+
   # Names are compared byte by byte, ignoring ASCII case: a lookup makes
   # no lowercase copies.
   pub def []?(name : String) : String?
