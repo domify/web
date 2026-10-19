@@ -290,7 +290,7 @@ pub class Server
     outcome.is_a?(Panicked) ? outcome : nil
   end
 
-  # Each request runs inside its own `Tape.scope`: its bytes as they are
+  # Each request runs inside its own `tape`: its bytes as they are
   # read, and its response as it is written, are on the tape and are gone
   # together when the response is out. The scope opens once the request's
   # first bytes are in, read onto the stack: a connection waiting for its
@@ -315,7 +315,7 @@ pub class Server
         end
       end
       done = false
-      Tape.scope do
+      tape do
         if rest = serve_request(conn, client, leftover, start, count, requests, exchange)
           leftover = rest
         else
@@ -585,11 +585,17 @@ pub class Server
   # A buffered response leaves in one write, from the tape of the request
   # it answers: its bytes go when the scope ends, not to the collector.
   private def send(client : IyiSocket, res : Response, version : String, include_body : Bool) : Nil
-    Tape.scope do
-      buffer = TapeWriter.new(res.http_capacity)
+    tape do
+      buffer = Tape::String::Writer.new(res.http_capacity)
       res.write_http(buffer, version, include_body)
       wire = buffer.finish
-      write_raw(client, wire.to_unsafe, wire.bytesize)
+      raise "the connection was cut off at shutdown" if client.closed?
+      case wrote = client.write(wire, wire[0, 0])
+      in Cancelled
+      in SocketError
+        raise wrote.message
+      in Int32
+      end
     end
   end
 

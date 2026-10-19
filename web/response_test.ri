@@ -133,8 +133,8 @@ describe "Response" do
 
   it "copies a sent body into the body when no server is attached" do
     res = Response.new
-    Tape.scope do
-      res.send(TapeString.build(8) { |buf| buf.append("plain") })
+    tape do
+      res.send(Tape::String.build(8) { |buf| buf.append("plain") })
     end
     assert res.body == "plain"
   end

@@ -50,7 +50,7 @@ end
 
 def take(wire : String) : Request
   request = nil.as(Request?)
-  Tape.scope do
+  tape do
     intake = Intake.new("", 1048576)
     intake.append(wire.to_unsafe, wire.bytesize)
     case got = intake.take
@@ -76,8 +76,8 @@ report("Context + router + handler") { dispatch(handler, request) }
 ctx = dispatch(handler, request)
 report("Date header") { ctx.response.headers["Date"] = current_http_date }
 report("serialise onto tape") do
-  Tape.scope do
-    buffer = TapeWriter.new(ctx.response.http_capacity)
+  tape do
+    buffer = Tape::String::Writer.new(ctx.response.http_capacity)
     ctx.response.write_http(buffer, "HTTP/1.1", true)
   end
 end
@@ -87,8 +87,8 @@ report("whole, without socket") do
   c = dispatch(handler, req)
   c.response.headers["Date"] = current_http_date
   c.response.headers["Connection"] = "keep-alive"
-  Tape.scope do
-    buffer = TapeWriter.new(c.response.http_capacity)
+  tape do
+    buffer = Tape::String::Writer.new(c.response.http_capacity)
     c.response.write_http(buffer, "HTTP/1.1", true)
   end
   request_log_line("GET", "/", 200, Span.new(nanoseconds: 1234))

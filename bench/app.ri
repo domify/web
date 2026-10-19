@@ -19,7 +19,7 @@ end
 ROWS = (1..1000).map { |i| "row <#{i}> & co" }
 
 # About 40 KB of rows, escaped, onto the request's tape.
-def render_rows(html : TapeWriter) : Nil
+def render_rows(html : Tape::String::Writer) : Nil
   ROWS.each do |row|
     html.append("<tr><td>")
     html.append_html_escaped(row)
@@ -30,8 +30,8 @@ end
 get "/render" do |env|
   env.response.content_type = "text/html; charset=utf-8"
   page = ""
-  Tape.scope do
-    html = TapeWriter.new(48_000)
+  tape do
+    html = Tape::String::Writer.new(48_000)
     render_rows(html)
     page = html.finish.to_s
   end
@@ -40,7 +40,7 @@ end
 
 get "/send" do |env|
   env.response.content_type = "text/html; charset=utf-8"
-  html = TapeWriter.new(48_000)
+  html = Tape::String::Writer.new(48_000)
   render_rows(html)
   env.response.send(html.finish)
   nil

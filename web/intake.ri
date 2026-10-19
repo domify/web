@@ -16,7 +16,7 @@
 # it cannot agree on is refused rather than guessed at: two
 # `Content-Length`s that differ, or more than one `Transfer-Encoding`.
 #
-# The bytes are on the tape of the request's `Tape.scope`, read into it
+# The bytes are on the tape of the request's `tape`, read into it
 # straight from the socket, and the framing is read from them in place:
 # until the parser runs, a request costs the collector nothing. What leaves
 # - the `Request`, the bytes after it - is copied out as heap strings.
@@ -61,7 +61,7 @@ end
 
 @[OnTape]
 pub struct Intake
-  @bytes : TapeWriter
+  @bytes : Tape::String::Writer
   @max_body : Int32
   @searched : Int32
   @head_end : Int32
@@ -79,7 +79,7 @@ pub struct Intake
 
   # *leftover* is what the connection's last request left unread.
   def initialize(leftover : String, @max_body : Int32)
-    @bytes = TapeWriter.new(leftover.bytesize < 4096 ? 4096 : leftover.bytesize)
+    @bytes = Tape::String::Writer.new(leftover.bytesize < 4096 ? 4096 : leftover.bytesize)
     @searched = 0
     @head_end = -1
     @framed = false
@@ -97,7 +97,7 @@ pub struct Intake
   end
 
   pub def append(chunk : String) : Nil
-    @bytes.append(chunk.to_unsafe, chunk.bytesize)
+    @bytes.append(chunk)
   end
 
   pub def append(bytes : Pointer(UInt8), count : Int32) : Nil
@@ -194,7 +194,7 @@ pub struct Intake
   # Looks for the blank line that ends the head in what arrived since the
   # last look; true once it is there.
   private def find_head_end : Bool
-    p = @bytes.finish.to_unsafe
+    p = @bytes.finish
     n = @bytes.length
     i = @searched > 3 ? @searched - 3 : 0
     while i + 3 < n
@@ -210,7 +210,7 @@ pub struct Intake
 
   # How much body follows the head in *bytes*, read from its fields where
   # they lie. Runs in a `Tape.local`: the parsed head stays there.
-  def self.framing(bytes : TapeString, max_body : Int32) : Framing | ParseError | TooLarge | Nil
+  def self.framing(bytes : Tape::String, max_body : Int32) : Framing | ParseError | TooLarge | Nil
     head = Server.parse_head(bytes)
     case head
     in Nil
@@ -230,17 +230,17 @@ pub struct Intake
     while i < fields.size
       f = fields[i]
       name = f.name
-      if HTTP.same_name?(name.to_unsafe, name.bytesize, "Content-Length")
+      if HTTP.same_name?(name, "Content-Length")
         if first = length
           lengths_differ = true unless same_bytes?(first.value, f.value)
         else
           length = f
         end
-      elsif HTTP.same_name?(name.to_unsafe, name.bytesize, "Transfer-Encoding")
+      elsif HTTP.same_name?(name, "Transfer-Encoding")
         encodings = encodings + 1
-        chunked = HTTP.same_name?(f.value.to_unsafe, f.value.bytesize, "chunked")
-      elsif HTTP.same_name?(name.to_unsafe, name.bytesize, "Expect")
-        expects = HTTP.same_name?(f.value.to_unsafe, f.value.bytesize, "100-continue")
+        chunked = HTTP.same_name?(f.value, "chunked")
+      elsif HTTP.same_name?(name, "Expect")
+        expects = HTTP.same_name?(f.value, "100-continue")
       end
       i = i + 1
     end
@@ -262,11 +262,11 @@ pub struct Intake
     Framing.new(body_start + declared.to_i32, declared.to_i32, false, body_start, expects && declared > 0)
   end
 
-  private def self.same_bytes?(a : TapeString, b : TapeString) : Bool
+  private def self.same_bytes?(a : Tape::String, b : Tape::String) : Bool
     return false unless a.bytesize == b.bytesize
     i = 0
     while i < a.bytesize
-      return false unless a.to_unsafe[i] == b.to_unsafe[i]
+      return false unless a[i] == b[i]
       i = i + 1
     end
     true
@@ -275,7 +275,7 @@ pub struct Intake
   # Checks what has arrived of a chunked body, without copying it: true
   # once its last chunk and trailers are in (`@end_at` is just past them).
   private def scan_chunks : Bool | ParseError | TooLarge
-    p = @bytes.finish.to_unsafe
+    p = @bytes.finish
     n = @bytes.length
     while @scan < n
       if @state == SIZE_LINE
@@ -324,7 +324,7 @@ pub struct Intake
 
   # The chunked body, checked by `scan_chunks`, decoded into one string.
   private def decode_body : String
-    p = @bytes.finish.to_unsafe
+    p = @bytes.finish
     total = @body_size.to_i32
     String.new(total) do |target|
       at = @body_start
@@ -333,7 +333,11 @@ pub struct Intake
         line_end = find_crlf(at) || at # checked by scan_chunks: always found
         size = chunk_size(at, line_end).to_i32
         at = line_end + 2
-        (target + written).copy_from(p + at, size)
+        k = 0
+        while k < size
+          target[written + k] = p[at + k]
+          k = k + 1
+        end
         written = written + size
         at = at + size + 2
       end
@@ -344,7 +348,7 @@ pub struct Intake
   # extensions and blanks; -1 when it is not hexadecimal. Eight digits at
   # most, which is more than any body the server takes.
   private def chunk_size(from : Int32, to : Int32) : Int64
-    p = @bytes.finish.to_unsafe
+    p = @bytes.finish
     last = from
     while last < to && p[last] != 59_u8
       last = last + 1
@@ -378,7 +382,7 @@ pub struct Intake
   end
 
   private def find_crlf(from : Int32) : Int32?
-    p = @bytes.finish.to_unsafe
+    p = @bytes.finish
     n = @bytes.length
     i = from
     while i + 1 < n
@@ -391,10 +395,7 @@ pub struct Intake
 
 
 
-  private def copy(buffer : TapeWriter, from : Int32, count : Int32) : String
-    source = buffer.finish.to_unsafe + from
-    String.new(count) do |target|
-      target.copy_from(source, count)
-    end
+  private def copy(buffer : Tape::String::Writer, from : Int32, count : Int32) : String
+    buffer.finish[from, count].to_s
   end
 end

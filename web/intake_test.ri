@@ -14,7 +14,7 @@ STEPS = [1, 2, 3, 7, 64, 4096]
 # server's are.
 def feed(wire : String, step : Int32, max_body : Int32 = 1024) : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
   result = nil.as(Tuple(Request, String, Bool) | ParseError | TooLarge | Nil)
-  Tape.scope do
+  tape do
     intake = Intake.new("", max_body)
     at = 0
     while at < wire.bytesize && intake.ready == false
@@ -117,7 +117,7 @@ describe "Intake" do
   end
 
   it "asks for a body the client holds back for 100 Continue, once" do
-    Tape.scope do
+    tape do
       intake = Intake.new("", 1024)
       intake.append("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n")
       assert intake.take.nil?

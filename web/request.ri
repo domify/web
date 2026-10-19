@@ -109,8 +109,8 @@ end
 pub def parse_head(block : String) : Request | ParseError
   text = block.includes?("\r\n\r\n") ? block : block + "\r\n\r\n"
   result = ParseError.new("incomplete request").as(Request | ParseError)
-  Tape.scope do
-    case head = Server.parse_head(TapeString.new(text.to_unsafe, text.bytesize))
+  tape do
+    case head = Server.parse_head(Tape::String.view(text))
     in Nil
     in HeadError
       result = ParseError.new(head.message)
@@ -142,11 +142,11 @@ pub def request_from(head : ParsedHead, body : String) : Tuple(Request, Bool) | 
   http10 = head.http10?
   version = http10 ? "HTTP/1.0" : "HTTP/1.1"
   target = head.target
-  p = target.to_unsafe
+  p = target
   n = target.bytesize
   path = ""
   query = ""
-  if authority = HTTP.absolute_form(p, n)
+  if authority = HTTP.absolute_form(target)
     # The absolute form (RFC 9112 §3.2.2): its authority is the host,
     # whatever the Host line says, and the path follows it.
     after = authority
@@ -161,9 +161,12 @@ pub def request_from(head : ParsedHead, body : String) : Tuple(Request, Bool) | 
     origin = "/" + origin if origin.bytesize == 0 || origin.starts_with?("?")
     path, query = split_target(origin)
   else
-    q = HTTP.byte_in(p, 0, n, 63_u8)
-    raw = TapeString.new(p, q).to_s
-    query = q < n ? TapeString.new(p + q + 1, n - q - 1).to_s : ""
+    q = 0
+    while q < n && p[q] != 63_u8
+      q = q + 1
+    end
+    raw = target[0, q].to_s
+    query = q < n ? target[q + 1, n - q - 1].to_s : ""
     raw = "/" if raw == "*" || raw.empty?
     path = decode_path(raw)
     path = "/" if path.empty?

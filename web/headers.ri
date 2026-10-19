@@ -63,8 +63,8 @@ pub class Headers
   # On the caller's tape when there is one, as a request's is.
   pub def to_s : String
     text = ""
-    Tape.scope do
-      buffer = TapeWriter.new(bytesize)
+    tape do
+      buffer = Tape::String::Writer.new(bytesize)
       write(buffer)
       text = buffer.finish.to_s
     end
@@ -73,7 +73,7 @@ pub class Headers
 
   # The header block as it goes on the wire, `Name: value` lines each
   # ending in CRLF, onto *buffer*.
-  pub def write(buffer : TapeWriter) : Nil
+  pub def write(buffer : Tape::String::Writer) : Nil
     @pairs.each do |pair|
       buffer.append(pair[0])
       buffer.append(": ")
