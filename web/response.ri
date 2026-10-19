@@ -217,7 +217,7 @@ pub class Response
   # body nor a Content-Type.
   pub def to_http(version : String, include_body : Bool = true) : String
     text = ""
-    Tape.local do
+    local_tape do
       buffer = Tape::String::Writer.new(http_capacity)
       write_http(buffer, version, include_body)
       text = buffer.finish.to_s

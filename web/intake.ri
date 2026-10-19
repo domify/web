@@ -22,7 +22,7 @@
 # - the `Request`, the bytes after it - is copied out as heap strings.
 #
 # Only the bytes grow while a request comes in (TAPE_DESIGN.md, "Layout"):
-# `ready` reads the framing from a head parsed on a `Tape.local` of its
+# `ready` reads the framing from a head parsed on a `local_tape` of its
 # own, reserves room for a sized body, and checks a chunked one without
 # copying it; `take`, once `ready`, parses the head on the request's tape
 # and decodes a chunked body straight into the request's heap string.
@@ -129,7 +129,7 @@ pub struct Intake
       bytes = @bytes.finish
       max_body = @max_body
       framed = nil.as(Framing | ParseError | TooLarge | Nil)
-      Tape.local do
+      local_tape do
         framed = Intake.framing(bytes, max_body)
       end
       case framed
@@ -209,7 +209,7 @@ pub struct Intake
   end
 
   # How much body follows the head in *bytes*, read from its fields where
-  # they lie. Runs in a `Tape.local`: the parsed head stays there.
+  # they lie. Runs in a `local_tape`: the parsed head stays there.
   def self.framing(bytes : Tape::String, max_body : Int32) : Framing | ParseError | TooLarge | Nil
     head = Server.parse_head(bytes)
     case head
