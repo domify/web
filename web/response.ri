@@ -168,30 +168,41 @@ pub class Response
   # or `Connection`, which are given in the headers if at all, and names
   # `Content-Type` only when *typed*.
   pub def send(fields : Tape::String, text : Tape::String, typed : Bool = false) : Nil
+    pieces = Tape::Array(Tape::String).new(1)
+    pieces << text
+    send(fields, pieces, typed)
+  end
+
+  # `send` with the body in *pieces*, sent in order with the head in one
+  # write and never joined: a page's runs between the fragments it shares
+  # with a cache.
+  pub def send(fields : Tape::String, pieces : Tape::Array(Tape::String), typed : Bool = false) : Nil
     socket = @socket
     unless socket
       keep_fields(fields)
-      keep(text)
+      pieces.each { |piece| keep(piece) }
       return
     end
+    size = 0
+    pieces.each { |piece| size = size + piece.bytesize }
     if !@headers_sent && !@headers.has_key?("Content-Length") && !no_entity?
-      @headers["Content-Length"] = (@body.bytesize + text.bytesize).to_s
+      @headers["Content-Length"] = (@body.bytesize + size).to_s
     end
-    # The head, what was printed before and *text* go in one write:
+    # The head, what was printed before and the pieces go in one write:
     # written apart, the second write waits on the client's delayed ACK
-    # (Nagle), 40 ms a response. *text* goes from where it is; a chunk,
-    # which needs its CRLF after it, is joined on the tape.
+    # (Nagle), 40 ms a response. The pieces go from where they are; a
+    # chunk, which needs its CRLF after it, is joined on the tape.
     head = !@headers_sent
     @typed = typed
     settle_stream_head if head
     @typed = false
     @headers_sent = true
-    body = !(@head || no_entity?) && (@body.bytesize + text.bytesize) > 0
+    body = !(@head || no_entity?) && (@body.bytesize + size) > 0
     pending = body ? @body : ""
     @body = ""
     framed = body && @chunked
     count = (head ? 64 + @headers.bytesize + fields.bytesize : 0) + pending.bytesize
-    prefix = Tape::String::Writer.new(count + (framed ? 32 + text.bytesize : 0))
+    prefix = Tape::String::Writer.new(count + (framed ? 32 + size : 0))
     if head
       prefix.append(@version)
       prefix.push(32_u8)
@@ -208,17 +219,24 @@ pub class Response
       end
       prefix.append("\r\n")
     end
-    prefix.append((pending.bytesize + text.bytesize).to_s(16) + "\r\n") if framed
+    prefix.append((pending.bytesize + size).to_s(16) + "\r\n") if framed
     prefix.append(pending)
     if framed
-      prefix.append(text)
+      pieces.each { |piece| prefix.append(piece) }
       prefix.append("\r\n")
     end
     # Closed under the task by a cut-off at shutdown, as the server's own
     # writes are: the panic stops the handler.
     raise "the connection was cut off at shutdown" if socket.closed?
-    rest = body && !framed ? text : Tape::String.build(0) { |_| nil }
-    case wrote = socket.write(prefix.finish, rest)
+    wrote = if body && !framed && pieces.size > 1
+              all = Tape::Array(Tape::String).new(pieces.size + 1)
+              all << prefix.finish
+              pieces.each { |piece| all << piece }
+              socket.write(all)
+            else
+              socket.write(prefix.finish, body && !framed && pieces.size == 1 ? pieces[0] : "".as_tape)
+            end
+    case wrote
     in Cancelled
     in SocketError
       raise wrote.message
