@@ -244,3 +244,104 @@ pub def with_body(request : Request, body : String) : Request
 end
 
 
+
+# A request as it arrived, on the tape of its connection: the parsed
+# head's views and the body, nothing copied. What a handler with a
+# request type of its own reads (`Handler#answer`) instead of a `Request`.
+@[OnTape]
+pub struct Arrived
+  getter head : ParsedHead
+  getter body : Tape::String
+  # The target's path, percent-decoded (a view when there is nothing to
+  # decode), and its query, left encoded.
+  getter path : Tape::String
+  getter query : Tape::String
+  # What the client sent after this request, which the connection reads
+  # next.
+  getter rest : String
+  # Whether the connection closes after this request.
+  getter close : Bool
+
+  def initialize(@head : ParsedHead, @body : Tape::String, @path : Tape::String, @query : Tape::String, @rest : String, @close : Bool)
+  end
+
+  def method : Tape::String
+    @head.method
+  end
+
+  def head? : Bool
+    @head.method == "HEAD"
+  end
+
+  def http10? : Bool
+    @head.http10?
+  end
+
+  # The value of the first field called *name*, in any case.
+  def field(name : String) : Tape::String?
+    @head.field(name)
+  end
+
+  # The request as a `Request` on the heap, for a handler that reads one.
+  def to_request : Tuple(Request, Bool) | ParseError
+    request_from(@head, @body.to_heap)
+  end
+end
+
+# *head* as an `Arrived`, with *body*, or a refusal for framing `std/http`
+# refuses, as `request_from` refuses it. The absolute form is left to
+# `request_from`: nil.
+pub def arrived_from(head : ParsedHead, body : Tape::String, rest : String) : Arrived | ParseError | Nil
+  target = head.target
+  return nil if HTTP.absolute_form(target)
+  close = close_after(head)
+  return close if close.is_a?(ParseError)
+  q = 0
+  while q < target.bytesize && target[q] != 63_u8
+    q = q + 1
+  end
+  raw = target[0, q]
+  query = q < target.bytesize ? target[q + 1, target.bytesize - q - 1] : "".as_tape
+  path = raw.bytesize == 0 || raw == "*" ? "/".as_tape : decode_path(raw)
+  path = "/".as_tape if path.bytesize == 0
+  Arrived.new(head, body, path, query, rest, close)
+end
+
+# Whether the connection closes after the request *head* begins, or a
+# refusal for its framing, read where the fields lie.
+def close_after(head : ParsedHead) : Bool | ParseError
+  http10 = head.http10?
+  close = http10
+  if conn = head.field("Connection")
+    close = HTTP.has_token?(conn, "close") || (http10 && !HTTP.has_token?(conn, "keep-alive"))
+  end
+  if te = head.field("Transfer-Encoding")
+    return ParseError.new("transfer encoding #{te.to_heap.inspect} is not chunked") unless chunked?(te)
+    close = true if head.field("Content-Length") || http10
+  elsif cl = head.field("Content-Length")
+    return ParseError.new("Content-Length is not a number: #{cl.to_heap.inspect}") unless content_length(cl)
+  end
+  close
+end
+
+# `chunked`, in any case, between optional whitespace.
+def chunked?(value : Tape::String) : Bool
+  from = 0
+  stop = value.bytesize
+  while from < stop && (value[from] == 32_u8 || value[from] == 9_u8)
+    from = from + 1
+  end
+  while stop > from && (value[stop - 1] == 32_u8 || value[stop - 1] == 9_u8)
+    stop = stop - 1
+  end
+  word = "chunked"
+  return false unless stop - from == word.bytesize
+  i = 0
+  while i < word.bytesize
+    byte = value[from + i]
+    byte = byte + 32_u8 if byte >= 65_u8 && byte <= 90_u8
+    return false unless byte == word.as_tape[i]
+    i = i + 1
+  end
+  true
+end

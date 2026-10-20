@@ -10,6 +10,8 @@ module web/handler
 
 import web/codec
 import web/context::{Context}
+import web/request::{Arrived}
+import web/response::{Response}
 
 pub class Handler
   @next_handler : Handler?
@@ -33,6 +35,13 @@ pub class Handler
 
   pub def call(ctx : Context) : Nil
     call_next(ctx)
+  end
+
+  # A request as it arrived, on the tape, for a handler that reads it so:
+  # it answers into *response* and says true. False (this one) has the
+  # server make a `Request` and a `Context` and `call` the chain.
+  pub def answer(arrived : Arrived, response : Response) : Bool
+    false
   end
 
   pub def call_next(ctx : Context) : Nil

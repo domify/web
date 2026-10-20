@@ -98,6 +98,29 @@ pub def decode_path(text : String) : String
   decode(text, false)
 end
 
+# `decode_path` on the tape: *text* itself when it holds no escape, else
+# the decoded bytes written beside it.
+pub def decode_path(text : Tape::String) : Tape::String
+  return text unless text.includes?('%')
+  decoded = Tape::String::Writer.new(text.bytesize)
+  index = 0
+  while index < text.bytesize
+    byte = text[index]
+    if byte == 37_u8 && index + 2 < text.bytesize
+      hi = hex_value(text[index + 1].unsafe_chr)
+      lo = hex_value(text[index + 2].unsafe_chr)
+      if hi >= 0 && lo >= 0
+        decoded.push((hi * 16 + lo).to_u8)
+        index = index + 3
+        next
+      end
+    end
+    decoded.push(byte)
+    index = index + 1
+  end
+  decoded.finish
+end
+
 pub def decode_form(text : String) : String
   decode(text, true)
 end
