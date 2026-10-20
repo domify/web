@@ -186,7 +186,6 @@ end
 # the connection to close; a refusal for framing `std/http` refuses. Built
 # from the head's views on the request's tape: the method, the version and
 # the fields are copied to the heap once, into what the `Request` keeps.
-@[Escape]
 pub def request_from(head : ParsedHead, body : String) : Tuple(Request, Bool) | ParseError
   headers = Headers.new
   head.each_heap_field { |name, value| headers.add(name, value) }
@@ -204,7 +203,7 @@ pub def request_from(head : ParsedHead, body : String) : Tuple(Request, Bool) | 
     while after < n && p[after] != 47_u8 && p[after] != 63_u8
       after = after + 1
     end
-    text = target.to_s
+    text = target.to_heap
     named = text[authority, after - authority]
     return ParseError.new("not a host: #{named.inspect}") unless named.bytesize > 0 && HTTP.host?(named)
     headers["Host"] = named
@@ -216,8 +215,8 @@ pub def request_from(head : ParsedHead, body : String) : Tuple(Request, Bool) | 
     while q < n && p[q] != 63_u8
       q = q + 1
     end
-    raw = target[0, q].to_s
-    query = q < n ? target[q + 1, n - q - 1].to_s : ""
+    raw = target[0, q].to_heap
+    query = q < n ? target[q + 1, n - q - 1].to_heap : ""
     raw = "/" if raw == "*" || raw.empty?
     path = decode_path(raw)
     path = "/" if path.empty?
@@ -237,7 +236,7 @@ pub def request_from(head : ParsedHead, body : String) : Tuple(Request, Bool) | 
   elsif cl = headers["content-length"]?
     return ParseError.new("Content-Length is not a number: #{cl.inspect}") unless HTTP.content_length(cl)
   end
-  {Request.new(head.method.to_s, path, query, version, headers, body), close}
+  {Request.new(head.method.to_heap, path, query, version, headers, body), close}
 end
 
 pub def with_body(request : Request, body : String) : Request
