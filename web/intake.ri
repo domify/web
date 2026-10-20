@@ -395,8 +395,7 @@ pub struct Intake
 
   # Where bytes leave the request's tape: the body, for the `Request` the
   # handler keeps, and what follows the request, for the connection's next.
-  @[Escape]
   private def copy(buffer : Tape::String::Writer, from : Int32, count : Int32) : String
-    buffer.finish[from, count].to_s
+    buffer.finish[from, count].to_heap
   end
 end
