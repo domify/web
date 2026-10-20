@@ -26,7 +26,12 @@ pub alias StoreValue = Nil | String | Int32 | Int64 | Float64 | Bool
 pub class Context
   @request : Request
   @response : Response
-  @params : Params
+  # Parsed when first asked for: a handler that reads its request another
+  # way (a framework above with its own params) never pays for it.
+  @params : Params?
+  @url : Hash(String, String)?
+  @max_files : Int32?
+  @max_field_size : Int32
   @halted : Bool
   @store : Hash(String, StoreValue)
   @cookies : CookieJar?
@@ -34,7 +39,9 @@ pub class Context
   @route_pattern : String?
   @max_ranges : Int32
 
-  def initialize(@request : Request, @response : Response, @params : Params)
+  def initialize(@request : Request, @response : Response, @params : Params?, @url : Hash(String, String)? = nil)
+    @max_files = nil
+    @max_field_size = 0
     @halted = false
     @store = {} of String => StoreValue
     @cookies = nil
@@ -44,11 +51,11 @@ pub class Context
   end
 
   def self.for(request : Request) : Context
-    Context.new(request, Response.new, Params.from(request, {} of String => String))
+    Context.new(request, Response.new, nil)
   end
 
   def self.for(request : Request, url : Hash(String, String)) : Context
-    Context.new(request, Response.new, Params.from(request, url))
+    Context.new(request, Response.new, nil, url)
   end
 
   pub def request : Request
@@ -60,7 +67,31 @@ pub class Context
   end
 
   pub def params : Params
-    @params
+    if made = @params
+      return made
+    end
+    made = Params.from(@request, @url || {} of String => String)
+    if files = @max_files
+      made.limit_uploads(files, @max_field_size)
+    end
+    @params = made
+    made
+  end
+
+  # `Params#limit_uploads`, for the params when they are made.
+  pub def limit_uploads(max_files : Int32, max_field_size : Int32) : Nil
+    @max_files = max_files
+    @max_field_size = max_field_size
+    if made = @params
+      made.limit_uploads(max_files, max_field_size)
+    end
+  end
+
+  # `Params#cleanup`, when there are params to clean up after.
+  pub def cleanup_params : Nil
+    if made = @params
+      made.cleanup
+    end
   end
 
   pub def halted? : Bool

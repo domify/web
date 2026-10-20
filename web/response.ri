@@ -30,6 +30,8 @@ pub class Response
   @headers_sent : Bool
   @chunked : Bool
   @upgrade : Proc(IyiSocket, String, Nil)?
+  # Whether the fields `send` is given carry the `Content-Type`.
+  @typed : Bool
 
   def initialize
     @status_code = 200
@@ -45,6 +47,7 @@ pub class Response
     @headers_sent = false
     @chunked = false
     @upgrade = nil
+    @typed = false
   end
 
   pub def status_code : Int32
@@ -87,6 +90,23 @@ pub class Response
 
   pub def write(text : String) : Nil
     print(text)
+  end
+
+  # Without a socket, header fields written for `send` are kept in the
+  # headers, on the heap.
+  private def keep_fields(fields : Tape::String) : Nil
+    start = 0
+    while start < fields.bytesize
+      stop = start
+      while stop + 1 < fields.bytesize && !(fields[stop] == 13_u8 && fields[stop + 1] == 10_u8)
+        stop = stop + 1
+      end
+      line = fields[start, stop - start]
+      if colon = line.index(':')
+        @headers.add(line[0, colon].to_heap, line[colon + 2, line.bytesize - colon - 2].to_heap)
+      end
+      start = stop + 2
+    end
   end
 
   # Without a socket (a response a test reads) the text is kept in the
@@ -138,8 +158,19 @@ pub class Response
   # it needs to live only until this returns. Headers set after it are not
   # sent. Without a socket attached it is copied into the body instead.
   pub def send(text : Tape::String) : Nil
+    send("".as_tape, text)
+  end
+
+  # `send`, with header *fields* a layer above wrote on the request's tape,
+  # each `Name: value` and a CRLF: they go out after this response's own
+  # and before the framing it works out (`Content-Length`, `Connection`),
+  # in the same write, copied nowhere. *fields* names no `Content-Length`
+  # or `Connection`, which are given in the headers if at all, and names
+  # `Content-Type` only when *typed*.
+  pub def send(fields : Tape::String, text : Tape::String, typed : Bool = false) : Nil
     socket = @socket
     unless socket
+      keep_fields(fields)
       keep(text)
       return
     end
@@ -151,13 +182,15 @@ pub class Response
     # (Nagle), 40 ms a response. *text* goes from where it is; a chunk,
     # which needs its CRLF after it, is joined on the tape.
     head = !@headers_sent
+    @typed = typed
     settle_stream_head if head
+    @typed = false
     @headers_sent = true
     body = !(@head || no_entity?) && (@body.bytesize + text.bytesize) > 0
     pending = body ? @body : ""
     @body = ""
     framed = body && @chunked
-    count = (head ? 64 + @headers.bytesize : 0) + pending.bytesize
+    count = (head ? 64 + @headers.bytesize + fields.bytesize : 0) + pending.bytesize
     prefix = Tape::String::Writer.new(count + (framed ? 32 + text.bytesize : 0))
     if head
       prefix.append(@version)
@@ -166,7 +199,13 @@ pub class Response
       prefix.push(32_u8)
       prefix.append(phrase(@status_code))
       prefix.append("\r\n")
-      @headers.write(prefix)
+      if fields.empty?
+        @headers.write(prefix)
+      else
+        @headers.write_framing(prefix, false)
+        prefix.append(fields)
+        @headers.write_framing(prefix, true)
+      end
       prefix.append("\r\n")
     end
     prefix.append((pending.bytesize + text.bytesize).to_s(16) + "\r\n") if framed
@@ -288,7 +327,7 @@ pub class Response
   # The headers a streamed response is sent with: its type, its framing and
   # whether the connection stays open.
   private def settle_stream_head : Nil
-    unless @headers.has_key?("Content-Type") || no_entity?
+    unless @typed || @headers.has_key?("Content-Type") || no_entity?
       @headers["Content-Type"] = @content_type
     end
     @chunked = @version == "HTTP/1.1" && !@headers.has_key?("Content-Length") && !no_entity?

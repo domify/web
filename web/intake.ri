@@ -29,7 +29,7 @@
 module web/intake
 
 import std/http::{HTTP, Server, ParsedHead, HeadError, Field}
-import web/request::{Request, ParseError, request_from, content_length}
+import web/request::{Request, ParseError, Arrived, request_from, arrived_from, content_length}
 import std/text
 
 # `std/http`'s bound on a request's head.
@@ -177,6 +177,35 @@ pub struct Intake
         body = @declared > 0 ? copy(@bytes, head.body_start, @declared) : ""
         finish(request_from(head, body), head.body_start + @declared)
       end
+    end
+  end
+
+  # `take` as an `Arrived`: the head's views and the body where they lie
+  # on the request's tape. A chunked body is decoded once, on the heap.
+  # Nil for an absolute-form target, which `take` reads instead.
+  pub def take_arrived : Arrived | ParseError | TooLarge | Nil
+    case ready = self.ready
+    in ParseError
+      return ready
+    in TooLarge
+      return ready
+    in Bool
+      return nil unless ready
+    end
+    case head = Server.parse_head(@bytes.finish)
+    in Nil
+      ParseError.new("incomplete request")
+    in HeadError
+      ParseError.new(head.message)
+    in ParsedHead
+      at = @chunked ? @end_at : head.body_start + @declared
+      body = if @chunked
+               decode_body.as_tape
+             else
+               @declared > 0 ? @bytes.finish[head.body_start, @declared] : "".as_tape
+             end
+      rest = at < @bytes.length ? copy(@bytes, at, @bytes.length - at) : ""
+      arrived_from(head, body, rest)
     end
   end
 

@@ -39,7 +39,8 @@ import std/html::{HTML}
 import std/time::{Time, Span}
 import web/handler::{Handler}
 import web/context::{Context}
-import web/request::{Request, ParseError}
+import web/request::{Request, ParseError, Arrived}
+import web/headers::{Headers}
 import web/intake::{Intake, TooLarge}
 import web/response::{Response}
 import web/config::{Config}
@@ -191,6 +192,13 @@ pub class Server
         # status line is already on the wire. The connection just ends.
         unless ctx.response.headers_sent?
           isolated { answer_panic(client, ctx, exchange.started, failure) }
+        end
+      elsif response = exchange.answering
+        # The request it answered was on the tape, gone with it: the
+        # error page is given a stand-in of its method alone.
+        unless response.headers_sent?
+          request = Request.new(exchange.answering_head ? "HEAD" : "GET", "/", "", "HTTP/1.1", Headers.new, "")
+          isolated { answer_panic(client, Context.new(request, response, nil), exchange.started, failure) }
         end
       end
     end
@@ -374,6 +382,9 @@ pub class Server
     in TimedOut
       write_error(client, 408, "Request Timeout")
       nil
+    in Arrived
+      keepalive = wants_keepalive?(it.close, requests)
+      answer(client, it, keepalive, exchange) ? it.rest : nil
     in Tuple(Request, String, Bool)
       keepalive = wants_keepalive?(it[2], requests)
       dispatch(client, it[0], it[1], keepalive, exchange) ? it[1] : nil
@@ -395,9 +406,9 @@ pub class Server
     @in_flight = @in_flight + 1
     defer leave
     ctx = Context.for(request)
-    ctx.params.limit_uploads(@config.max_file_uploads, @config.max_multipart_form_field_size)
+    ctx.limit_uploads(@config.max_file_uploads, @config.max_multipart_form_field_size)
     ctx.max_ranges = @config.max_ranges
-    defer ctx.params.cleanup
+    defer ctx.cleanup_params
     exchange.context = ctx
     exchange.started = Time.monotonic
     head = HTTP.same_name?(request.method, "HEAD")
@@ -428,6 +439,55 @@ pub class Server
     keepalive
   end
 
+  # A request as it arrived, offered to the handler's `answer` first: one
+  # that reads it on the tape answers it there, and no `Request` or
+  # `Context` is made. Otherwise it becomes a `Request` and is dispatched.
+  private def answer(client : IyiSocket, arrived : Arrived, keepalive : Bool, exchange : Exchange) : Bool
+    kept = answer_arrived(client, arrived, keepalive, exchange)
+    return kept unless kept.nil?
+    case built = arrived.to_request
+    in ParseError
+      write_error(client, 400, "Bad Request")
+      false
+    in Tuple(Request, Bool)
+      dispatch(client, built[0], arrived.rest, keepalive, exchange)
+    end
+  end
+
+  # `answer`'s handler call and its response, counted in flight: whether
+  # the connection may carry another request, or nil when the handler
+  # left the request to the chain.
+  private def answer_arrived(client : IyiSocket, arrived : Arrived, keepalive : Bool, exchange : Exchange) : Bool?
+    @in_flight = @in_flight + 1
+    defer leave
+    response = Response.new
+    head = arrived.head?
+    version = arrived.http10? ? "HTTP/1.0" : "HTTP/1.1"
+    response.attach(->(bytes : String) { write_raw(client, bytes) }, client, version, keepalive, head)
+    stamp(response)
+    exchange.answering = response
+    exchange.answering_head = head
+    exchange.started = Time.monotonic
+    answered = @handler.answer(arrived, response)
+    exchange.answering = nil
+    return nil unless answered
+    if conn = response.headers["connection"]?
+      keepalive = false if conn.downcase == "close"
+    end
+    return false if client.closed?
+    keepalive = false if @draining
+    exchange.writing = true
+    if response.headers_sent?
+      response.finish
+      keepalive = keepalive && response.reusable?
+    else
+      response.headers["Connection"] = keepalive ? "keep-alive" : "close"
+      send(client, response, version, !head)
+    end
+    exchange.writing = false
+    keepalive
+  end
+
   private def leave : Nil
     @in_flight = @in_flight - 1
   end
@@ -447,11 +507,15 @@ pub class Server
   end
 
   private def stamp(ctx : Context) : Nil
+    stamp(ctx.response)
+  end
+
+  private def stamp(response : Response) : Nil
     if @config.powered_by_header
-      ctx.response.headers["X-Powered-By"] = "web"
+      response.headers["X-Powered-By"] = "web"
     end
-    unless ctx.response.headers.has_key?("Date")
-      ctx.response.headers["Date"] = current_http_date
+    unless response.headers.has_key?("Date")
+      response.headers["Date"] = current_http_date
     end
   end
 
@@ -515,7 +579,7 @@ pub class Server
   # for that first byte; a connection that sent nothing is just `Closed`.
   # While the server drains, a keep-alive connection takes no further
   # request, and a new one only the request it has already sent.
-  private def read_request(conn : Connection, leftover : String, start : Pointer(UInt8), count : Int32, first : Bool) : Tuple(Request, String, Bool) | ParseError | TooLarge | TimedOut | Closed
+  private def read_request(conn : Connection, leftover : String, start : Pointer(UInt8), count : Int32, first : Bool) : Arrived | Tuple(Request, String, Bool) | ParseError | TooLarge | TimedOut | Closed
     client = conn.socket
     intake = Intake.new(leftover, @config.max_request_body_size)
     intake.append(start, count) if count > 0
@@ -565,6 +629,8 @@ pub class Server
         intake.append(start, got)
       end
     end
+    arrived = intake.take_arrived
+    return arrived unless arrived.nil?
     intake.take || ParseError.new("incomplete request")
   end
 
@@ -632,11 +698,17 @@ end
 # handled, until its response starts going buffer.
 class Exchange
   property context : Context?
+  # The response to a request a handler answers as it arrived, and whether
+  # it was a HEAD: no `Context` was made for it.
+  property answering : Response?
+  property answering_head : Bool
   property started : Span
   property writing : Bool
 
   def initialize
     @context = nil
+    @answering = nil
+    @answering_head = false
     @started = Time.monotonic
     @writing = false
   end
