@@ -304,19 +304,20 @@ pub struct Intake
   # Checks what has arrived of a chunked body, without copying it: true
   # once its last chunk and trailers are in (`@end_at` is just past them).
   private def scan_chunks : Bool | ParseError | TooLarge
-    p = @bytes.finish
-    n = @bytes.length
-    while @scan < n
+    s = Tape::Scanner.new(@bytes.finish)
+    s.offset = @scan
+    # Kept at each step's start: a refusal comes before the step moves.
+    while (@scan = s.offset) && !s.eos?
       if @state == SIZE_LINE
-        line_end = find_crlf(@scan)
+        line_end = find_crlf(s.offset)
         unless line_end
-          return ParseError.new("chunk size line too long") if n - @scan > MAX_CHUNK_LINE
+          return ParseError.new("chunk size line too long") if s.rest.bytesize > MAX_CHUNK_LINE
           return false
         end
-        size = chunk_size(@scan, line_end)
+        size = chunk_size(s.offset, line_end)
         return ParseError.new("not a chunk size") if size < 0
         return TooLarge.new if @body_size + size > @max_body.to_i64
-        @scan = line_end + 2
+        s.offset = line_end + 2
         if size == 0
           @state = TRAILERS
         else
@@ -324,28 +325,27 @@ pub struct Intake
           @state = CHUNK_DATA
         end
       elsif @state == CHUNK_DATA
-        take = n - @scan
+        take = s.rest.bytesize
         take = @remaining if @remaining < take
         @body_size = @body_size + take
-        @scan = @scan + take
+        s.advance(take)
         @remaining = @remaining - take
         @state = CHUNK_END if @remaining == 0
       elsif @state == CHUNK_END
-        return false if n - @scan < 2
-        return ParseError.new("a chunk is not followed by CRLF") unless p[@scan] == 13_u8 && p[@scan + 1] == 10_u8
-        @scan = @scan + 2
+        return false if s.rest.bytesize < 2
+        return ParseError.new("a chunk is not followed by CRLF") unless s.skip("\r\n")
         @state = SIZE_LINE
       else
-        line_end = find_crlf(@scan)
+        line_end = find_crlf(s.offset)
         unless line_end
-          return ParseError.new("trailer line too long") if n - @scan > MAX_CHUNK_LINE
+          return ParseError.new("trailer line too long") if s.rest.bytesize > MAX_CHUNK_LINE
           return false
         end
-        if line_end == @scan
+        if line_end == s.offset
           @end_at = line_end + 2
           return true
         end
-        @scan = line_end + 2
+        s.offset = line_end + 2
       end
     end
     false
