@@ -63,7 +63,7 @@ end
 
 @[OnTape]
 pub struct Intake
-  @bytes : Tape::String::Writer
+  @bytes : Str::Builder
   @max_body : Int32
   @searched : Int32
   @head_end : Int32
@@ -81,7 +81,7 @@ pub struct Intake
 
   # *leftover* is what the connection's last request left unread.
   def initialize(leftover : String, @max_body : Int32)
-    @bytes = Tape::String::Writer.new(leftover.bytesize < 4096 ? 4096 : leftover.bytesize)
+    @bytes = Str::Builder.new(leftover.bytesize < 4096 ? 4096 : leftover.bytesize)
     @searched = 0
     @head_end = -1
     @framed = false
@@ -247,7 +247,7 @@ pub struct Intake
 
   # How much body follows the head in *bytes*, read from its fields where
   # they lie. Runs in a `local_tape`: the parsed head stays there.
-  def self.framing(bytes : Tape::String, max_body : Int32) : Framing | ParseError | TooLarge | Nil
+  def self.framing(bytes : Str, max_body : Int32) : Framing | ParseError | TooLarge | Nil
     head = Server.parse_head(bytes)
     case head
     in Nil
@@ -299,7 +299,7 @@ pub struct Intake
     Framing.new(body_start + declared.to_i32, declared.to_i32, false, body_start, expects && declared > 0)
   end
 
-  private def self.same_bytes?(a : Tape::String, b : Tape::String) : Bool
+  private def self.same_bytes?(a : Str, b : Str) : Bool
     return false unless a.bytesize == b.bytesize
     i = 0
     while i < a.bytesize
@@ -312,7 +312,7 @@ pub struct Intake
   # Checks what has arrived of a chunked body, without copying it: true
   # once its last chunk and trailers are in (`@end_at` is just past them).
   private def scan_chunks : Bool | ParseError | TooLarge
-    s = Tape::Scanner.new(@bytes.finish)
+    s = Str::Scanner.new(@bytes.finish)
     s.offset = @scan
     # Kept at each step's start: a refusal comes before the step moves.
     while (@scan = s.offset) && !s.eos?
@@ -432,7 +432,7 @@ pub struct Intake
 
   # Where bytes leave the request's tape: the body, for the `Request` the
   # handler keeps, and what follows the request, for the connection's next.
-  private def copy(buffer : Tape::String::Writer, from : Int32, count : Int32) : String
+  private def copy(buffer : Str::Builder, from : Int32, count : Int32) : String
     buffer.finish[from, count].to_heap
   end
 end

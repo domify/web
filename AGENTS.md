@@ -20,12 +20,12 @@ bench/run.sh 5        # requests per second and peak RSS, --release
   the current version, shows a clear gain, and put the numbers in the
   README's "Memory" section.
 - Work on the request's tape, as Slim does: what web calls into (std/http,
-  templates, JSON) takes the request's bytes as `Tape::String` and writes
-  into its `Tape::String::Writer`, and opens no tape of its own. Copy to
+  templates, JSON) takes the request's bytes as `Str` and writes
+  into its `Str::Builder`, and opens no tape of its own. Copy to
   the heap only what a handler keeps. ris's CLAUDE.md has the whole model.
 - No raw pointers in the handler API (no `send(pointer, count)`): a
-  handler hands the response a `Tape::String` or writes into a
-  `Tape::String::Writer`, and only the server takes `to_unsafe`, at the
+  handler hands the response a `Str` or writes into a
+  `Str::Builder`, and only the server takes `to_unsafe`, at the
   socket write. The tape checker does not follow a pointer out of its scope.
 - Every line is at most 80 characters in documents and commit messages.
 

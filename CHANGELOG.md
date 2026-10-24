@@ -11,7 +11,7 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Ported to ris as `web` (`github.com/domify/web`): modules are `web/...`
   and files `.ri`. The environment variable is `WEB_ENV`, the default
   `app_name` and `X-Powered-By` are `web`.
-- Every request runs in its own `Tape.scope`, opened once its first bytes
+- Every request runs in its own `tape`, opened once its first bytes
   are in: they are read onto the tape, framed in place, and the buffered
   response is written there and sent in one write. +10.5% requests per
   second on a 12-byte page, +19% on a 40 KB one, -7% peak RSS.

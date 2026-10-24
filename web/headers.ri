@@ -71,7 +71,7 @@ pub class Headers
   pub def to_s : String
     text = ""
     tape do
-      buffer = Tape::String::Writer.new(bytesize)
+      buffer = Str::Builder.new(bytesize)
       write(buffer)
       text = buffer.finish.to_heap
     end
@@ -80,7 +80,7 @@ pub class Headers
 
   # The header block as it goes on the wire, `Name: value` lines each
   # ending in CRLF, onto *buffer*.
-  pub def write(buffer : Tape::String::Writer) : Nil
+  pub def write(buffer : Str::Builder) : Nil
     @pairs.each do |pair|
       buffer.append(pair[0])
       buffer.append(": ")
@@ -92,7 +92,7 @@ pub class Headers
   # The fields `write` writes: those that frame a message
   # (`Content-Length`, `Connection`, `Transfer-Encoding`) when *framing*,
   # the others when not.
-  pub def write_framing(buffer : Tape::String::Writer, framing : Bool) : Nil
+  pub def write_framing(buffer : Str::Builder, framing : Bool) : Nil
     @pairs.each do |pair|
       name = pair[0]
       next unless framing == (HTTP.same_name?(name, "Content-Length") || HTTP.same_name?(name, "Connection") || HTTP.same_name?(name, "Transfer-Encoding"))
