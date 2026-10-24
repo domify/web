@@ -13,20 +13,20 @@ bench/run.sh 5        # requests per second and peak RSS, --release
 
 ## Rules
 
-- Tape only where it pays. Each request has a `Tape.scope`
+- Tape only where it pays. Each request has a `tape` block
   (`Server#serve_connection`), opened after its first bytes are read so an
   idle connection holds no tape; `Intake` and `Response#write_http` use it.
   Move more onto the tape only when a benchmark, run interleaved against
   the current version, shows a clear gain, and put the numbers in the
   README's "Memory" section.
 - Work on the request's tape, as Slim does: what web calls into (std/http,
-  templates, JSON) takes the request's bytes as `TapeString` and writes
-  into its `TapeWriter`, and opens no tape of its own. Copy to the heap
-  only what a handler keeps. ris's CLAUDE.md has the whole model.
+  templates, JSON) takes the request's bytes as `Tape::String` and writes
+  into its `Tape::String::Writer`, and opens no tape of its own. Copy to
+  the heap only what a handler keeps. ris's CLAUDE.md has the whole model.
 - No raw pointers in the handler API (no `send(pointer, count)`): a
-  handler hands the response a `TapeString` or writes into a
-  `TapeWriter`, and only the server takes `to_unsafe`, at the socket write.
-  The tape checker does not follow a pointer out of its scope.
+  handler hands the response a `Tape::String` or writes into a
+  `Tape::String::Writer`, and only the server takes `to_unsafe`, at the
+  socket write. The tape checker does not follow a pointer out of its scope.
 - Every line is at most 80 characters in documents and commit messages.
 
 ## Commits

@@ -437,13 +437,13 @@ Headers changed after the first `flush` are not sent.
 ### Sending from the tape
 
 A page rendered onto the request's tape goes out with
-`env.response.send(text : TapeString)`, straight from the tape and never
+`env.response.send(text : Tape::String)`, straight from the tape and never
 copied to the heap. The server opens the tape for each request, so the
 route opens none:
 
 ```ris
 get "/page" do |env|
-  page = TapeString.build(4096) { |buf| render_page(buf) }
+  page = Tape::String.build(4096) { |buf| render_page(buf) }
   env.response.send(page)
   nil
 end
@@ -1040,7 +1040,7 @@ cd demo && ris run app.ri
 ## Memory
 
 ris's tape memory is one mapping per fiber that values are bumped into and
-freed together with one store when their `Tape.scope` ends. web gives each
+freed together with one store when their `tape` block ends. web gives each
 request one:
 
 - The connection waits for a request on its stack, with no tape, so an
@@ -1086,22 +1086,22 @@ Joined in one buffer on the tape, 23,349 and 11.1 MB.
 
 ### Your own work on the request's tape
 
-A handler already runs inside the request's `Tape.scope`, and a nested
-`Tape.scope` shares that tape at no cost. Work that makes many short-lived
+A handler already runs inside the request's `tape` block, and a nested
+`tape` block shares that tape at no cost. Work that makes many short-lived
 pieces, such as a large page, can build on it and copy only the result to
 the heap:
 
 ```ris
 get "/report" do |env|
   page = ""
-  Tape.scope do
-    html = TapeWriter.new(8192)
+  tape do
+    html = Tape::String::Writer.new(8192)
     ROWS.each do |row|
       html.append("<tr><td>")
       html.append_html_escaped(row.name)
       html.append("</td></tr>")
     end
-    page = html.finish.to_s
+    page = html.finish.to_heap
   end
   page
 end
