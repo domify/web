@@ -187,7 +187,7 @@ end
 private def parse_position(text : String) : Int64?
   return nil if text.empty?
   value = 0_i64
-  bytes = text.to_unsafe
+  bytes = text.as_tape
   index = 0
   while index < text.bytesize
     byte = bytes[index]

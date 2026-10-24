@@ -56,7 +56,7 @@ end
 pub def encode_cookie_value(value : String) : String
   hex = "0123456789ABCDEF"
   encoded = ""
-  bytes = value.to_unsafe
+  bytes = value.as_tape
   index = 0
   while index < value.bytesize
     byte = bytes[index]

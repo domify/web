@@ -30,6 +30,8 @@ module web/intake
 
 import std/http::{HTTP, Server, ParsedHead, HeadError, Field}
 import web/request::{Request, ParseError, Arrived, request_from, arrived_from, content_length}
+import std/slice::{Bytes}
+import std/socket::{IyiSocket, SocketError}
 import std/text
 
 # `std/http`'s bound on a request's head.
@@ -100,8 +102,14 @@ pub struct Intake
     @bytes.append(chunk)
   end
 
-  pub def append(bytes : Pointer(UInt8), count : Int32) : Nil
-    @bytes.append(bytes, count)
+  # Bytes read before the request's tape opened.
+  pub def append(chunk : Bytes) : Nil
+    chunk.each { |byte| @bytes.push(byte) }
+  end
+
+  # Up to *max* bytes off *client*, straight onto the end of the request.
+  pub def read_from(client : IyiSocket, max : Int32) : Int32 | Cancelled | SocketError
+    client.read(@bytes, max)
   end
 
   # No byte of a request has arrived.
@@ -355,7 +363,7 @@ pub struct Intake
   private def decode_body : String
     p = @bytes.finish
     total = @body_size.to_i32
-    String.new(total) do |target|
+    String.build(total) do |io|
       at = @body_start
       written = 0
       while written < total
@@ -364,7 +372,7 @@ pub struct Intake
         at = line_end + 2
         k = 0
         while k < size
-          target[written + k] = p[at + k]
+          io.write_byte(p[at + k])
           k = k + 1
         end
         written = written + size
