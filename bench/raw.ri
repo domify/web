@@ -19,7 +19,7 @@ PAGE_RESPONSE  = response("text/html; charset=utf-8", PAGE)
 
 def serve(sock : IyiSocket) : Nil
   tape do
-    buffer = Tape::String::Writer.new(16384)
+    buffer = Str::Builder.new(16384)
     while true
       got = sock.read(buffer, 16384 - buffer.length)
       break unless got.is_a?(Int32) && got > 0

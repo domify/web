@@ -92,9 +92,9 @@ end
 
 # `decode_path` on the tape: *text* itself when it holds no escape, else
 # the decoded bytes written beside it.
-pub def decode_path(text : Tape::String) : Tape::String
+pub def decode_path(text : Str) : Str
   return text unless text.includes?('%')
-  decoded = Tape::String::Writer.new(text.bytesize)
+  decoded = Str::Builder.new(text.bytesize)
   index = 0
   while index < text.bytesize
     byte = text[index]

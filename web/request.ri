@@ -106,7 +106,7 @@ end
 # `HTTP.content_length` read where the field lies: every comma-separated
 # part spelled as the first (RFC 9112 §6.3), digits only (RFC 9110
 # §8.6), and one past 2147483647 for any larger.
-pub def content_length(value : Tape::String) : Int64?
+pub def content_length(value : Str) : Int64?
   first_from = -1
   first_to = -1
   start = 0
@@ -160,7 +160,7 @@ pub def parse_head(block : String) : Request | ParseError
   text = block.includes?("\r\n\r\n") ? block : block + "\r\n\r\n"
   result = ParseError.new("incomplete request").as(Request | ParseError)
   tape do
-    case head = Server.parse_head(Tape::String.view(text))
+    case head = Server.parse_head(Str.view(text))
     in Nil
     in HeadError
       result = ParseError.new(head.message)
@@ -251,21 +251,21 @@ end
 @[OnTape]
 pub struct Arrived
   getter head : ParsedHead
-  getter body : Tape::String
+  getter body : Str
   # The target's path, percent-decoded (a view when there is nothing to
   # decode), and its query, left encoded.
-  getter path : Tape::String
-  getter query : Tape::String
+  getter path : Str
+  getter query : Str
   # What the client sent after this request, which the connection reads
   # next.
   getter rest : String
   # Whether the connection closes after this request.
   getter close : Bool
 
-  def initialize(@head : ParsedHead, @body : Tape::String, @path : Tape::String, @query : Tape::String, @rest : String, @close : Bool)
+  def initialize(@head : ParsedHead, @body : Str, @path : Str, @query : Str, @rest : String, @close : Bool)
   end
 
-  def method : Tape::String
+  def method : Str
     @head.method
   end
 
@@ -278,7 +278,7 @@ pub struct Arrived
   end
 
   # The value of the first field called *name*, in any case.
-  def field(name : String) : Tape::String?
+  def field(name : String) : Str?
     @head.field(name)
   end
 
@@ -291,7 +291,7 @@ end
 # *head* as an `Arrived`, with *body*, or a refusal for framing `std/http`
 # refuses, as `request_from` refuses it. The absolute form is left to
 # `request_from`: nil.
-pub def arrived_from(head : ParsedHead, body : Tape::String, rest : String) : Arrived | ParseError | Nil
+pub def arrived_from(head : ParsedHead, body : Str, rest : String) : Arrived | ParseError | Nil
   target = head.target
   return nil if HTTP.absolute_form(target)
   close = close_after(head)
@@ -325,7 +325,7 @@ def close_after(head : ParsedHead) : Bool | ParseError
 end
 
 # `chunked`, in any case, between optional whitespace.
-def chunked?(value : Tape::String) : Bool
+def chunked?(value : Str) : Bool
   from = 0
   stop = value.bytesize
   while from < stop && (value[from] == 32_u8 || value[from] == 9_u8)

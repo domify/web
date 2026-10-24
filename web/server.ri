@@ -655,7 +655,7 @@ pub class Server
   # it answers: its bytes go when the scope ends, not to the collector.
   private def send(client : IyiSocket, res : Response, version : String, include_body : Bool) : Nil
     tape do
-      buffer = Tape::String::Writer.new(res.http_capacity)
+      buffer = Str::Builder.new(res.http_capacity)
       res.write_http(buffer, version, include_body)
       wire = buffer.finish
       raise "the connection was cut off at shutdown" if client.closed?

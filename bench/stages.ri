@@ -77,7 +77,7 @@ ctx = dispatch(handler, request)
 report("Date header") { ctx.response.headers["Date"] = current_http_date }
 report("serialise onto tape") do
   tape do
-    buffer = Tape::String::Writer.new(ctx.response.http_capacity)
+    buffer = Str::Builder.new(ctx.response.http_capacity)
     ctx.response.write_http(buffer, "HTTP/1.1", true)
   end
 end
@@ -88,7 +88,7 @@ report("whole, without socket") do
   c.response.headers["Date"] = current_http_date
   c.response.headers["Connection"] = "keep-alive"
   tape do
-    buffer = Tape::String::Writer.new(c.response.http_capacity)
+    buffer = Str::Builder.new(c.response.http_capacity)
     c.response.write_http(buffer, "HTTP/1.1", true)
   end
   request_log_line("GET", "/", 200, Span.new(nanoseconds: 1234))

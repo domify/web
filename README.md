@@ -437,13 +437,13 @@ Headers changed after the first `flush` are not sent.
 ### Sending from the tape
 
 A page rendered onto the request's tape goes out with
-`env.response.send(text : Tape::String)`, straight from the tape and never
+`env.response.send(text : Str)`, straight from the tape and never
 copied to the heap. The server opens the tape for each request, so the
 route opens none:
 
 ```ris
 get "/page" do |env|
-  page = Tape::String.build(4096) { |buf| render_page(buf) }
+  page = Str.build(4096) { |buf| render_page(buf) }
   env.response.send(page)
   nil
 end
@@ -1095,7 +1095,7 @@ the heap:
 get "/report" do |env|
   page = ""
   tape do
-    html = Tape::String::Writer.new(8192)
+    html = Str::Builder.new(8192)
     ROWS.each do |row|
       html.append("<tr><td>")
       html.append_html_escaped(row.name)
