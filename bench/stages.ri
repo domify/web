@@ -52,7 +52,7 @@ def take(wire : String) : Request
   request = nil.as(Request?)
   tape do
     intake = Intake.new("", 1048576)
-    intake.append(wire.to_unsafe, wire.bytesize)
+    intake.append(wire)
     case got = intake.take
     in Tuple(Request, String, Bool) then request = got[0]
     in ParseError, TooLarge, Nil    then raise "not taken"
