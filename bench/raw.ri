@@ -1,5 +1,5 @@
 # The ceiling for bench/app.ri: the same two answers, `/` and `/page`, from
-# a loop on std/socket with no framework. It reads onto the stack, finds
+# a loop on std/socket with no framework. It reads onto the tape, finds
 # the head's end and the path, and writes a response prepared at start.
 # Keep-alive only; anything else closes the connection.
 module bench/raw
@@ -18,36 +18,34 @@ HELLO_RESPONSE = response("text/html; charset=utf-8", "Hello World!")
 PAGE_RESPONSE  = response("text/html; charset=utf-8", PAGE)
 
 def serve(sock : IyiSocket) : Nil
-  buffer = uninitialized UInt8[16384]
-  p = pointerof(buffer).as(UInt8*)
-  filled = 0
-  while true
-    got = sock.read(p + filled, 16384 - filled)
-    break unless got.is_a?(Int32) && got > 0
-    filled = filled + got
-    # Every complete head in the buffer gets its answer.
-    start = 0
-    i = 0
-    while i + 3 < filled
-      if p[i] == 13_u8 && p[i + 1] == 10_u8 && p[i + 2] == 13_u8 && p[i + 3] == 10_u8
-        # "GET /page" has `p` at the sixth byte.
-        answer = p[start + 5] == 112_u8 ? PAGE_RESPONSE : HELLO_RESPONSE
-        break unless sock.write(answer).is_a?(Int32)
-        start = i + 4
-        i = start
-      else
-        i = i + 1
+  tape do
+    buffer = Tape::String::Writer.new(16384)
+    while true
+      got = sock.read(buffer, 16384 - buffer.length)
+      break unless got.is_a?(Int32) && got > 0
+      text = buffer.finish
+      # Every complete head in the buffer gets its answer.
+      start = 0
+      i = 0
+      while i + 3 < text.bytesize
+        if text[i] == 13_u8 && text[i + 1] == 10_u8 && text[i + 2] == 13_u8 && text[i + 3] == 10_u8
+          # "GET /page" has `p` at the sixth byte.
+          answer = text[start + 5] == 112_u8 ? PAGE_RESPONSE : HELLO_RESPONSE
+          break unless sock.write(answer).is_a?(Int32)
+          start = i + 4
+          i = start
+        else
+          i = i + 1
+        end
       end
-    end
-    if start > 0
-      k = 0
-      while k < filled - start
-        p[k] = p[start + k]
-        k = k + 1
+      if start > 0
+        # A head cut short waits for the rest at the front of the buffer.
+        rest = text[start, text.bytesize - start].to_heap
+        buffer.clear
+        buffer.append(rest)
       end
-      filled = filled - start
+      break if buffer.length == 16384
     end
-    break if filled == 16384
   end
   sock.close
 end
