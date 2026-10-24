@@ -200,7 +200,7 @@ private def after_delimiter(body : String, cursor : Int32) : Int32?
   return CLOSED if rest >= 2 && body[cursor, 2] == "--"
   line_end = body.index("\r\n", cursor)
   return nil unless line_end
-  bytes = body.to_unsafe
+  bytes = body.as_tape
   index = cursor
   while index < line_end
     byte = bytes[index]
@@ -294,7 +294,7 @@ end
 # Any other backslash is kept, so a Windows path sent as a filename
 # survives.
 private def parse_header_params(text : String) : Tuple(String, Array(Tuple(String, String)))
-  bytes = text.to_unsafe
+  bytes = text.as_tape
   size = text.bytesize
   index = 0
   while index < size && bytes[index] != 59_u8
@@ -318,20 +318,16 @@ private def parse_header_params(text : String) : Tuple(String, Array(Tuple(Strin
       end
       if index < size && bytes[index] == 34_u8
         index = index + 1
-        buffer = Pointer(UInt8).malloc((size - index + 1).to_u64)
-        written = 0
-        while index < size && bytes[index] != 34_u8
-          byte = bytes[index]
-          if byte == 92_u8 && index + 1 < size && (bytes[index + 1] == 34_u8 || bytes[index + 1] == 92_u8)
-            index = index + 1
+        value = String.build(size - index) do |io|
+          while index < size && bytes[index] != 34_u8
             byte = bytes[index]
+            if byte == 92_u8 && index + 1 < size && (bytes[index + 1] == 34_u8 || bytes[index + 1] == 92_u8)
+              index = index + 1
+              byte = bytes[index]
+            end
+            io.write_byte(byte)
+            index = index + 1
           end
-          buffer[written] = byte
-          written = written + 1
-          index = index + 1
-        end
-        value = String.new(written) do |target|
-          target.copy_from(buffer, written)
         end
         while index < size && bytes[index] != 59_u8
           index = index + 1

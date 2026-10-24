@@ -61,36 +61,28 @@ end
 # `%` sequences are left as written rather than rejected: a path is not
 # a place to 400 over a client that sent `%GG`.
 pub def decode(text : String, form : Bool = false) : String
-  bytes = Pointer(UInt8).malloc(text.bytesize.to_u64)
-  written = 0
-  index = 0
-  while index < text.bytesize
-    ch = text[index]
-    if form && ch == '+'
-      bytes[written] = 32_u8
-      written = written + 1
-      index = index + 1
-    elsif ch == '%' && index + 2 < text.bytesize
-      hi = hex_value(text[index + 1])
-      lo = hex_value(text[index + 2])
-      if hi >= 0 && lo >= 0
-        bytes[written] = (hi * 16 + lo).to_u8
-        written = written + 1
-        index = index + 3
+  String.build(text.bytesize) do |io|
+    index = 0
+    while index < text.bytesize
+      ch = text[index]
+      if form && ch == '+'
+        io.write_byte(32_u8)
+        index = index + 1
+      elsif ch == '%' && index + 2 < text.bytesize
+        hi = hex_value(text[index + 1])
+        lo = hex_value(text[index + 2])
+        if hi >= 0 && lo >= 0
+          io.write_byte((hi * 16 + lo).to_u8)
+          index = index + 3
+        else
+          io.write_byte(ch.ord.to_u8)
+          index = index + 1
+        end
       else
-        bytes[written] = ch.ord.to_u8
-        written = written + 1
+        io.write_byte(ch.ord.to_u8)
         index = index + 1
       end
-    else
-      bytes[written] = ch.ord.to_u8
-      written = written + 1
-      index = index + 1
     end
-  end
-
-  String.new(written) do |target|
-    target.copy_from(bytes, written)
   end
 end
 

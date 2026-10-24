@@ -2,6 +2,7 @@
 # uploads are spooled into.
 module web/token
 
+import std/text
 import std/random::{Random}
 import std/int
 
@@ -28,25 +29,17 @@ private def random_bytes(count : Int32) : String
   {% end %}
 
   rng = Random.new
-  String.new(count) do |target|
-    index = 0
-    while index < count
-      target[index] = (rng.next_u & 255_u32).to_u8
-      index = index + 1
-    end
+  String.build(count) do |io|
+    count.times { io.write_byte((rng.next_u & 255_u32).to_u8) }
   end
 end
 
 private def hex(bytes : String) : String
   digits = "0123456789abcdef"
-  source = bytes.to_unsafe
-  String.new(bytes.bytesize * 2) do |target|
-    index = 0
-    while index < bytes.bytesize
-      byte = source[index]
-      target[index * 2] = digits.to_unsafe[(byte >> 4).to_i32]
-      target[index * 2 + 1] = digits.to_unsafe[(byte & 15_u8).to_i32]
-      index = index + 1
+  String.build(bytes.bytesize * 2) do |io|
+    bytes.each_byte do |byte|
+      io.write_byte(digits.byte_at((byte >> 4).to_i32))
+      io.write_byte(digits.byte_at((byte & 15_u8).to_i32))
     end
   end
 end

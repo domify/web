@@ -31,8 +31,10 @@
 # the client to take bytes. The socket's own bound is per wait, so the
 # read bound is set before every read from what is left of the request's
 # deadline; a client trickling a byte at a time still runs buffer.
+@[Ffi]
 module web/server
 
+import std/slice::{Bytes}
 import std/socket::{IyiSocket, SocketError}
 import std/http::{HTTP}
 import std/html::{HTML}
@@ -46,7 +48,10 @@ import web/response::{Response}
 import web/config::{Config}
 import web/http_date::*
 
-# What one read off a connection takes, onto the connection's stack.
+# What one read off a connection takes. A request's first bytes are read
+# onto the connection's stack, before its tape opens: std/socket has no
+# read into a `UInt8[N]` without a pointer, so this module is `@[Ffi]`
+# for that and for `setsockopt`.
 READ_SIZE = 16384
 
 lib LibReusePort
@@ -582,7 +587,7 @@ pub class Server
   private def read_request(conn : Connection, leftover : String, start : Pointer(UInt8), count : Int32, first : Bool) : Arrived | Tuple(Request, String, Bool) | ParseError | TooLarge | TimedOut | Closed
     client = conn.socket
     intake = Intake.new(leftover, @config.max_request_body_size)
-    intake.append(start, count) if count > 0
+    intake.append(Bytes.new(start, count)) if count > 0
     limit = milliseconds(@config.read_timeout)
     since = first ? conn.accepted : Time.monotonic
     # Only the request's bytes grow in this loop; `take` parses them after.
@@ -612,9 +617,8 @@ pub class Server
       wait = 0 if waiting && @draining
       client.read_timeout_ms = wait
       conn.idle = waiting
-      # Read on the stack and appended to the tape: a read costs no heap
-      # string.
-      got = client.read(start, READ_SIZE)
+      # Read straight onto the tape: a read costs no heap string.
+      got = intake.read_from(client, READ_SIZE)
       conn.idle = false
       case got
       in Cancelled
@@ -626,7 +630,6 @@ pub class Server
         return Closed.new if got == 0 && waiting
         return ParseError.new("connection closed mid-headers") if got == 0
         since = Time.monotonic if waiting && !first
-        intake.append(start, got)
       end
     end
     arrived = intake.take_arrived
@@ -662,16 +665,6 @@ pub class Server
         raise wrote.message
       in Int32
       end
-    end
-  end
-
-  private def write_raw(client : IyiSocket, bytes : Pointer(UInt8), count : Int32) : Nil
-    raise "the connection was cut off at shutdown" if client.closed?
-    case wrote = client.write(bytes, count)
-    in Cancelled
-    in SocketError
-      raise wrote.message
-    in Int32
     end
   end
 

@@ -210,12 +210,8 @@ pub class WebSocket
   # the GUID.
   def self.accept_key(key : String) : String
     digest = SHA1.hash_bytes(key + HANDSHAKE_GUID)
-    raw = String.new(digest.size) do |target|
-      index = 0
-      while index < digest.size
-        target[index] = digest[index]
-        index = index + 1
-      end
+    raw = String.build(digest.size) do |io|
+      digest.each { |byte| io.write_byte(byte) }
     end
     Base64.encode(raw)
   end
@@ -303,38 +299,33 @@ pub class WebSocket
     masked = mask.bytesize == 4
     header = size < 126 ? 2 : (size < 65536 ? 4 : 10)
     body_at = header + (masked ? 4 : 0)
-    source = payload.to_unsafe
-    key = mask.to_unsafe
-    String.new(body_at + size) do |target|
-      target[0] = ((fin ? 0x80 : 0) | (opcode & 0x0F)).to_u8
+    String.build(body_at + size) do |io|
+      io.write_byte(((fin ? 0x80 : 0) | (opcode & 0x0F)).to_u8)
       mask_bit = masked ? 0x80 : 0
       if size < 126
-        target[1] = (mask_bit | size).to_u8
+        io.write_byte((mask_bit | size).to_u8)
       elsif size < 65536
-        target[1] = (mask_bit | 126).to_u8
-        target[2] = ((size >> 8) & 255).to_u8
-        target[3] = (size & 255).to_u8
+        io.write_byte((mask_bit | 126).to_u8)
+        io.write_byte(((size >> 8) & 255).to_u8)
+        io.write_byte((size & 255).to_u8)
       else
-        target[1] = (mask_bit | 127).to_u8
+        io.write_byte((mask_bit | 127).to_u8)
         index = 0
         while index < 8
           shift = (7 - index) * 8
-          target[2 + index] = shift >= 32 ? 0_u8 : ((size >> shift) & 255).to_u8
+          io.write_byte(shift >= 32 ? 0_u8 : ((size >> shift) & 255).to_u8)
           index = index + 1
         end
       end
       if masked
-        target[header] = key[0]
-        target[header + 1] = key[1]
-        target[header + 2] = key[2]
-        target[header + 3] = key[3]
+        io << mask
         index = 0
         while index < size
-          target[body_at + index] = source[index] ^ key[index & 3]
+          io.write_byte(payload.byte_at(index) ^ mask.byte_at(index & 3))
           index = index + 1
         end
       else
-        (target + body_at).copy_from(source, size)
+        io << payload
       end
     end
   end
@@ -348,7 +339,7 @@ pub class WebSocket
   def self.decode_frame(buffer : String, from : Int32, require_mask : Bool, max_payload : Int32) : Frame | FrameError | Int32
     have = buffer.bytesize - from
     return 2 if have < 2
-    bytes = buffer.to_unsafe + from
+    bytes = buffer.as_tape[from, have]
     first = bytes[0].to_i32
     second = bytes[1].to_i32
     fin = (first & 0x80) != 0
@@ -388,19 +379,17 @@ pub class WebSocket
     size = length.to_i32
     body_at = header + (masked ? 4 : 0)
     return body_at + size if have < body_at + size
-    payload = String.new(size) do |target|
-      if masked
-        key = bytes + header
-        source = bytes + body_at
-        index = 0
-        while index < size
-          target[index] = source[index] ^ key[index & 3]
-          index = index + 1
-        end
-      else
-        target.copy_from(bytes + body_at, size)
-      end
-    end
+    payload = if masked
+                String.build(size) do |io|
+                  index = 0
+                  while index < size
+                    io.write_byte(bytes[body_at + index] ^ bytes[header + (index & 3)])
+                    index = index + 1
+                  end
+                end
+              else
+                buffer[from + body_at, size]
+              end
     Frame.new(fin, opcode, payload, body_at + size)
   end
 
@@ -408,9 +397,9 @@ pub class WebSocket
   # reason; 1005 means "no code" and is sent as an empty payload.
   def self.close_payload(code : Int32, reason : String) : String
     return "" if code == 1005
-    prefix = String.new(2) do |target|
-      target[0] = ((code >> 8) & 255).to_u8
-      target[1] = (code & 255).to_u8
+    prefix = String.build(2) do |io|
+      io.write_byte(((code >> 8) & 255).to_u8)
+      io.write_byte((code & 255).to_u8)
     end
     prefix + reason
   end
@@ -532,8 +521,7 @@ pub class WebSocket
     code = 1005
     reason = ""
     if payload.bytesize >= 2
-      bytes = payload.to_unsafe
-      code = (bytes[0].to_i32 << 8) | bytes[1].to_i32
+      code = (payload.byte_at(0).to_i32 << 8) | payload.byte_at(1).to_i32
       return fail(1002, "invalid close code") unless WebSocket.valid_close_code?(code)
       reason = payload[2, payload.bytesize - 2]
       return fail(1007, "close reason is not UTF-8") unless Unicode.valid?(reason)
@@ -598,7 +586,7 @@ pub class WebSocket
   # Sixteen bytes in base64 are 22 characters and `==`.
   private def self.valid_key?(key : String) : Bool
     return false unless key.bytesize == 24 && key.ends_with?("==")
-    bytes = key.to_unsafe
+    bytes = key.as_tape
     index = 0
     while index < 22
       byte = bytes[index]
