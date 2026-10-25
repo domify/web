@@ -14,6 +14,11 @@
 # A HEAD gets the same `Content-Length` and no body, and the file is not
 # opened.
 #
+# A whole small file is kept in memory once read, as the assets a page
+# links to are asked for again and again: the next answer costs a `stat`,
+# not an open, a zeroed chunk and a read. The copy is used while the
+# file's size and modification time (in seconds) are what they were.
+#
 # The length is the file's size when it was looked at. A file removed
 # before it is opened, or cut short while it is read, cannot keep that
 # promise, so the send panics: before anything was flushed that is a 500,
@@ -23,11 +28,18 @@
 module web/file_body
 
 import std/file::{File}
+import std/mutex::{Mutex}
 import web/response::{Response}
 import web/range::*
 
 # The most bytes read from a file, and written to the connection, at once.
 pub FILE_CHUNK_SIZE = 65536
+
+# The most small files kept in memory; past it the cache starts over.
+FILE_CACHE_ENTRIES = 1024
+
+# Small whole files by path: modification time, size and contents.
+FILE_CACHE = Mutex.new { {} of String => Tuple(Int64, Int64, String) }
 
 # Answers *ranges* (what `parse_ranges` made of the request's `Range`
 # header, or nil) for the file at *path*, of *size* bytes and media type
@@ -87,6 +99,12 @@ private def send_spans(response : Response, path : String, spans : Array(Tuple(S
   end
 
   streamed = total > FILE_CHUNK_SIZE.to_i64
+  if !streamed && spans.size == 1 && spans[0][0].empty? && spans[0][1] == 0_i64 && trailer.empty?
+    if contents = cached_file(path, spans[0][2])
+      response.print(contents)
+      return
+    end
+  end
   file = File.open(path, "r", FILE_CHUNK_SIZE)
   defer file.close
   if streamed
@@ -102,6 +120,23 @@ private def send_spans(response : Response, path : String, spans : Array(Tuple(S
   end
   response.print(trailer)
   response.flush if streamed
+end
+
+# The whole file at *path* when it is *size* bytes, from memory while it
+# has not changed, else read and kept; nil when it is not that size.
+private def cached_file(path : String, size : Int64) : String?
+  info = File.info?(path)
+  return nil unless info && info.size == size
+  modified = info.modification_time
+  kept = FILE_CACHE.get { |files| files[path]? }.or_panic
+  return kept[2] if kept && kept[0] == modified && kept[1] == size
+  contents = File.read(path)
+  return nil unless contents.bytesize.to_i64 == size
+  FILE_CACHE.lock do |files|
+    files.clear if files.size >= FILE_CACHE_ENTRIES
+    files[path] = {modified, size, contents}
+  end.or_panic
+  contents
 end
 
 private def copy_span(response : Response, file : IyiIO, path : String, first : Int64, length : Int64, streamed : Bool) : Nil

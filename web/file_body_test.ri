@@ -131,6 +131,23 @@ group do |g|
         end
       end
 
+      it "serves a small file again from memory, and a changed one anew" do
+        File.tempfile("web-cache-", ".txt") do |small|
+          File.write(small, "first")
+          once = attached([] of String)
+          respond_file(once, small, 5_i64, nil, binary, false)
+          assert once.body == "first"
+          again = attached([] of String)
+          respond_file(again, small, 5_i64, nil, binary, false)
+          assert again.body == "first"
+
+          File.write(small, "second")
+          changed = attached([] of String)
+          respond_file(changed, small, 6_i64, nil, binary, false)
+          assert changed.body == "second"
+        end
+      end
+
       it "sends the whole file with its exact length and keeps the connection" do
         client = IyiSocket.connect("127.0.0.1", port).or_panic
         client.write("GET /file HTTP/1.1\r\nHost: localhost\r\n\r\n").or_panic
