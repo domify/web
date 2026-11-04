@@ -16,7 +16,6 @@ import std/time::{Time, Span}
 pub abstract class Logger
   # One finished request. *ctx* carries the status that was sent; the
   # default writes `request_log_line` through `write`.
-  #
   pub def request(ctx : Context, elapsed : Span) : Nil
     write(Web::Log.request_log_line(ctx.request.method, ctx.request.path, ctx.response.status_code, elapsed))
   end
