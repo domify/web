@@ -10,7 +10,8 @@ module examples/templates
 import std/html::{HTML}
 import web/dsl::*
 
-struct Book
+@[OnTape]
+pub struct Book
   getter id : Int32
   getter title : String
   getter author : String
@@ -29,27 +30,95 @@ BOOKS = [
 
 # Templates are compiled into the program and see the locals where `render`
 # is written: `books` here, `book` below. Paths are relative to this file.
-get "/" do |env|
-  books = BOOKS
-  render "views/books.eiy", "views/layout.eiy"
-end
 
-get "/books/:id" do |env|
-  id = env.params.url["id"].to_i? || 0
-  if book = BOOKS.find { |candidate| candidate.id == id }
-    render "views/book.eiy", "views/layout.eiy"
-  else
-    # An error status hands the response to the `error 404` page below.
-    env.response.status_code = 404
-    ""
-  end
-end
 
 # Error pages can render templates too. Output is not escaped for you, so
 # every template escapes what came from outside with `HTML.escape`.
-error 404 do |env|
-  path = env.request.path
-  render "views/not_found.eiy", "views/layout.eiy"
+
+
+import web/handler::{Handler}
+import web/router::{Router}
+import web/config::{Config}
+
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+
+class Route1 < RouteAction
+  def initialize(@books_config : Array(Book))
+  end
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    books = @books_config
+    rendered = render "views/books.eiy", "views/layout.eiy"
+    body = ""
+    body << rendered
+    body
+  end
 end
 
-run
+class Route2 < RouteAction
+  def initialize(@books_config : Array(Book))
+  end
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    id = env.params.url["id"].to_i? || 0
+    if book = @books_config.find { |candidate| candidate.id == id }
+      rendered = render "views/book.eiy", "views/layout.eiy"
+      body = ""
+      body << rendered
+      body
+    else
+      # An error status hands the response to the `error 404` page below.
+      env.response.status_code = 404
+      ""
+    end
+  end
+end
+
+class Route3 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    path = env.request.path
+    rendered = render "views/not_found.eiy", "views/layout.eiy"
+    body = ""
+    body << rendered
+    body
+  end
+end
+
+
+pub class Factory
+  def self.with_handler(data : Array(Book),
+                        & : Handler, Config -> Nil) : Nil
+    router = Router.new("")
+    options = Config.new
+    application = App.new(router, options)
+    books_config = data
+    route_action_1 = Route1.new(books_config)
+    application.get("/", route_action_1)
+    route_action_2 = Route2.new(books_config)
+    application.get("/books/:id", route_action_2)
+    route_action_3 = Route3.new
+    application.error(404, route_action_3)
+
+    with_handler_chain(application) do |handler|
+      yield handler, options
+    end
+    nil
+  end
+
+end
+
+run(BOOKS, Factory)

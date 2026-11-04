@@ -10,7 +10,7 @@
 module examples/middleware
 
 import web/dsl::*
-import web/handler::{Handler}
+import web/handler::{Handler, HandlerRules}
 import web/context::{Context}
 import web/cors::{CORSHandler}
 
@@ -22,8 +22,6 @@ class ApiKey < Handler
 
   def initialize(@key : String)
     super()
-    only ["/api/*"], "*"
-    exclude ["/api/health"], "*"
   end
 
   pub def call(ctx : Context) : Nil
@@ -41,29 +39,90 @@ end
 
 # Static files are served before `use` middleware and routes. The folder is
 # relative to the working directory, not to this file.
-public_folder "examples/public"
 
-static_headers do |env, path, info|
-  env.response.headers["Cache-Control"] = "public, max-age=3600"
+import web/handler::{Handler}
+import web/router::{Router}
+import web/config::{Config}
+import std/file::{File}
+import web/path::{PathHandler}
+import web/config::{StaticHeadersHook}
+
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+
+import web/router::{Route, SocketRoute}
+import web/radix::{Tree}
+import web/config::{Config}
+
+class Route1 < RouteAction
+  pub def call(env : Context) : String
+    perform(env).into_body
+  end
+
+  private def perform(env : Context)
+    "ok"
+  end
 end
 
-# `use` handlers run in the order they are added. CORS goes first so a
-# preflight, which carries no API key, is answered before `ApiKey` runs.
-use "/api", CORSHandler.new(origin: "https://app.example.com")
-use ApiKey.new(Program.env("API_KEY") || "secret")
+class Route2 < RouteAction
+  pub def call(env : Context) : String
+    perform(env).into_body
+  end
 
-# Compresses textual responses of 860 bytes or more for clients that send
-# `Accept-Encoding: gzip` or `deflate`.
-gzip true
-
-get "/api/health" do |env|
-  "ok"
+  private def perform(env : Context)
+    client = env.get("client").to_s
+    lines = (1..30).map { |day| "2026-09-" + day.to_s + ": " + (day * 17).to_s + " orders for " + client }
+    env.text(lines.join("\n") + "\n")
+  end
 end
 
-get "/api/report" do |env|
-  client = env.get("client").to_s
-  lines = (1..30).map { |day| "2026-09-" + day.to_s + ": " + (day * 17).to_s + " orders for " + client }
-  env.text(lines.join("\n") + "\n")
+class CacheHeader < StaticHeadersHook
+  pub def call(context : Context, path : String, info : File::Info) : Nil
+    context.response.headers["Cache-Control"] = "public, max-age=3600"
+    nil
+  end
 end
 
-run
+pub class Factory
+  def self.with_handler(data : String,
+                        & : Handler, Config -> Nil) : Nil
+    router = Router.new("")
+    options = Config.new
+    application = App.new(router, options)
+    application.public_folder("examples/public")
+
+    header_hook = CacheHeader.new
+    application.static_headers(header_hook)
+
+    # `use` handlers run in the order they are added. CORS goes first so a
+    # preflight, which carries no API key, is answered before `ApiKey` runs.
+    cors = CORSHandler.new(origin: "https://app.example.com")
+    scoped_cors = PathHandler.new("/api", cors)
+    application.use(scoped_cors)
+    rules = HandlerRules.new
+    rules.only(["/api/*"], "*")
+    rules.exclude(["/api/health"], "*")
+    auth = ApiKey.new(data)
+    auth.rules = rules
+    application.use(auth)
+
+    # Compresses textual responses of 860 bytes or more for clients that send
+    # `Accept-Encoding: gzip` or `deflate`.
+    application.gzip(true)
+
+    route_action_1 = Route1.new
+    application.get("/api/health", route_action_1)
+
+    route_action_2 = Route2.new
+    application.get("/api/report", route_action_2)
+
+
+    with_handler_chain(application) do |handler|
+      yield handler, options
+    end
+    nil
+  end
+end
+
+run(Program.env("API_KEY") || "secret", Factory)

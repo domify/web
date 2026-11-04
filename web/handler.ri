@@ -8,20 +8,48 @@
 # decides what to do with the answer.
 module web/handler
 
+import web/file_body::{FileCache}
 import web/codec
 import web/context::{Context}
 import web/request::{Arrived}
 import web/response::{Response}
 
+# Which requests a handler is meant for. An owner of its own, declared with
+# a name and given to the handler (`handler.rules = rules`): a class with a
+# growing field cannot be subclassed (SPEC 2.1), and every handler is one.
+pub class HandlerRules
+  getter only : Array(Tuple(String, String))
+  getter exclude : Array(Tuple(String, String))
+
+  def initialize
+    @only = [] of Tuple(String, String)
+    @exclude = [] of Tuple(String, String)
+  end
+
+  # Paths use the filter syntax: exact, `:name` segments, or a `/*` prefix.
+  # *method* "*" means every method, and a HEAD request counts as GET.
+  pub def only(paths : Array(String), method : String = "GET") : Nil
+    paths.each { |path| @only << {method, path} }
+  end
+
+  pub def exclude(paths : Array(String), method : String = "GET") : Nil
+    paths.each { |path| @exclude << {method, path} }
+  end
+end
+
 pub class Handler
   @next_handler : Handler?
-  @only : Array(Tuple(String, String))
-  @exclude : Array(Tuple(String, String))
+  @rules : HandlerRules?
+  property file_cache : FileCache?
 
   def initialize
     @next_handler = nil
-    @only = [] of Tuple(String, String)
-    @exclude = [] of Tuple(String, String)
+    @rules = nil
+    @file_cache = nil
+  end
+
+  pub def rules=(rules : HandlerRules) : HandlerRules
+    @rules = rules
   end
 
   pub def next_handler=(handler : Handler) : Handler
@@ -51,22 +79,14 @@ pub class Handler
     end
   end
 
-  # Paths use the filter syntax: exact, `:name` segments, or a `/*` prefix.
-  # *method* "*" means every method, and a HEAD request counts as GET.
-  pub def only(paths : Array(String), method : String = "GET") : Nil
-    paths.each { |path| @only << {method, path} }
-  end
-
-  pub def exclude(paths : Array(String), method : String = "GET") : Nil
-    paths.each { |path| @exclude << {method, path} }
-  end
-
   pub def only_match?(ctx : Context) : Bool
-    rules_match?(@only, ctx)
+    rules = @rules
+    rules ? rules_match?(rules.only, ctx) : false
   end
 
   pub def exclude_match?(ctx : Context) : Bool
-    rules_match?(@exclude, ctx)
+    rules = @rules
+    rules ? rules_match?(rules.exclude, ctx) : false
   end
 
   private def rules_match?(rules : Array(Tuple(String, String)), ctx : Context) : Bool

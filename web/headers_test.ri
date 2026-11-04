@@ -45,12 +45,12 @@ describe "Headers" do
     headers.add("X-A", "1")
     headers.add("X-A", "2")
 
-    names = [] of String
+    count = 0
     headers.each do |name, value|
-      names << name + "=" + value
+      assert name == "content-type" && value == "text/html" if count == 0
+      count += 1
     end
-    assert names.size == 3
-    assert names[0] == "content-type=text/html"
+    assert count == 3
   end
 
   it "deletes every case-insensitive match for a name" do
@@ -64,16 +64,16 @@ describe "Headers" do
   end
 
   it "refuses a name that is not a token" do
-    assert panics? { Headers.new["Bad Name"] = "x" }
-    assert panics? { Headers.new.add("", "x") }
-    assert panics? { Headers.new["X-A:"] = "x" }
+    assert(panics? { table = Headers.new; table["Bad Name"] = "x" })
+    assert(panics? { table = Headers.new; table.add("", "x") })
+    assert(panics? { table = Headers.new; table["X-A:"] = "x" })
   end
 
   it "refuses CR, LF and other control characters in a value" do
-    assert panics? { Headers.new["Location"] = "/next\r\nSet-Cookie: injected=1" }
-    assert panics? { Headers.new.add("X-A", "a\nb") }
-    assert panics? { Headers.new["X-A"] = "a\u0000b" }
-    assert panics? { Headers.new["X-A"] = "a\u007fb" }
+    assert(panics? { table = Headers.new; table["Location"] = "/next\r\nSet-Cookie: injected=1" })
+    assert(panics? { table = Headers.new; table.add("X-A", "a\nb") })
+    assert(panics? { table = Headers.new; table["X-A"] = "a\u0000b" })
+    assert(panics? { table = Headers.new; table["X-A"] = "a\u007fb" })
   end
 
   it "accepts tab, space and bytes above ASCII in a value" do

@@ -1,69 +1,21 @@
-# The ceiling for bench/app.ri: the same two answers, `/` and `/page`, from
-# a loop on std/socket with no framework. It reads onto the tape, finds
-# the head's end and the path, and writes a response prepared at start.
-# Keep-alive only; anything else closes the connection.
+# The same responses through std's task-owned reuse-port server.
 module bench/raw
 
-import std/socket::{IyiSocket}
-import std/text
-import std/int
+import std/http::{Server, Incoming, Outgoing}
 
 PAGE = "<p>ris web</p>\n" * 2730
 
-def response(type : String, body : String) : String
-  "HTTP/1.1 200 OK\r\nContent-Type: #{type}\r\nContent-Length: #{body.bytesize}\r\nConnection: keep-alive\r\n\r\n#{body}"
-end
-
-HELLO_RESPONSE = response("text/html; charset=utf-8", "Hello World!")
-PAGE_RESPONSE  = response("text/html; charset=utf-8", PAGE)
-
-def serve(sock : IyiSocket) : Nil
-  tape do
-    buffer = Str::Builder.new(16384)
-    while true
-      got = sock.read(buffer, 16384 - buffer.length)
-      break unless got.is_a?(Int32) && got > 0
-      text = buffer.finish
-      # Every complete head in the buffer gets its answer.
-      start = 0
-      i = 0
-      while i + 3 < text.bytesize
-        if text[i] == 13_u8 && text[i + 1] == 10_u8 && text[i + 2] == 13_u8 && text[i + 3] == 10_u8
-          # "GET /page" has `p` at the sixth byte.
-          answer = text[start + 5] == 112_u8 ? PAGE_RESPONSE : HELLO_RESPONSE
-          break unless sock.write(answer).is_a?(Int32)
-          start = i + 4
-          i = start
-        else
-          i = i + 1
-        end
-      end
-      if start > 0
-        # A head cut short waits for the rest at the front of the buffer.
-        rest = text[start, text.bytesize - start].to_heap
-        buffer.clear
-        buffer.append(rest)
-      end
-      break if buffer.length == 16384
-    end
+pub class Answers
+  def initialize(config : Int32)
   end
-  sock.close
-end
 
-def spawn_serve(g : IyiGroup, sock : IyiSocket) : Nil
-  g.spawn do
-    serve(sock)
-    0
+  def call(request : Incoming, response : Outgoing) : Nil
+    response.header("Content-Type", "text/html; charset=utf-8")
+    response.body.append(request.path == "/page" ? PAGE : "Hello World!")
+    nil
   end
 end
 
 args = Program.args
 port = (args.size > 1 ? args[1] : "3999").to_i
-listener = IyiSocket.listen("127.0.0.1", port)
-group do |g|
-  while !listener.closed?
-    client = listener.accept
-    spawn_serve(g, client) if client.is_a?(IyiSocket)
-  end
-  0
-end
+Server.answer("127.0.0.1", port, 0, Answers)

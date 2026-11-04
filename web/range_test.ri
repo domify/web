@@ -153,7 +153,7 @@ describe "byteranges_boundary" do
     digits = boundary[4, 32]
     index = 0
     while index < digits.bytesize
-      assert !"0123456789abcdef".index(digits[index]).nil?
+      assert !"0123456789abcdef".index(digits[index].unsafe_chr).nil?
       index = index + 1
     end
   end
@@ -177,6 +177,7 @@ describe "byteranges_body" do
     assert sections[3] == "--\r\n"
 
     parsed = [] of Tuple(String, String, String)
+    text = String::Builder.new
     index = 1
     while index <= 2
       section = sections[index]
@@ -187,7 +188,15 @@ describe "byteranges_body" do
       assert headers.size == 2
       assert split[1].ends_with?("\r\n")
       content = split[1][0, split[1].bytesize - 2]
-      parsed << {headers[0], headers[1], content}
+      first = text.bytesize
+      text.append(headers[0])
+      second = text.bytesize
+      text.append(headers[1])
+      third = text.bytesize
+      text.append(content)
+      kept = text.finish
+      parsed << {kept[first, second - first],
+        kept[second, third - second], kept[third, content.bytesize]}
       index = index + 1
     end
 

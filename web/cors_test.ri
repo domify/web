@@ -4,36 +4,86 @@ module web/cors_test
 import web/cors::{CORSHandler}
 import web/handler::{chain}
 import web/harness::*
+import web/router::{Router, RouteHandler}
+import web/handler::{Handler}
 import web/spec::*
 
-def cors_app
-  chain([CORSHandler.new, routes { |r|
-    r.get "/x" do |env|
-      "ok"
-    end
-    r.options "/x" do |env|
-      "opt"
-    end
-  }])
-end
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
 
-describe "CORSHandler" do
-  it "lets GET through and adds Allow-Origin" do
-    ctx = dispatch(cors_app, "GET", "/x")
-    assert ctx.response.body == "ok"
-    assert ctx.response.headers["access-control-allow-origin"] == "*"
+import web/router::{Route, SocketRoute}
+import web/radix::{Tree}
+import web/config::{Config}
+
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
   end
 
-  it "leaves a plain OPTIONS to the route" do
-    assert dispatch(cors_app, "OPTIONS", "/x").response.body == "opt"
-  end
-
-  it "answers a preflight with 204 and no body" do
-    pre = http_request("OPTIONS", "/x")
-    pre.headers["Access-Control-Request-Method"] = "POST"
-    ctx = dispatch(cors_app, pre)
-    assert ctx.response.status_code == 204
-    assert ctx.response.body == ""
-    assert ctx.response.headers["access-control-allow-methods"].includes?("POST")
+  private def perform(env : Context)
+    "ok"
   end
 end
+
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "opt"
+  end
+end
+
+
+def cors_app(& : Handler -> Nil) : Nil
+  router8 = Router.new("")
+  route_action_1 = Route1.new
+  router8.get("/x", route_action_1)
+  route_action_2 = Route2.new
+  router8.options("/x", route_action_2)
+  route_options_1 = Config.new
+  route_tree_1 = Tree(Int32).new
+  socket_tree_1 = Tree(Int32).new
+  route_handler_1 = RouteHandler.new(route_tree_1, socket_tree_1, route_options_1)
+  route_handler_1.load(router8)
+  routed8 = route_handler_1
+  yield chain([CORSHandler.new, routed8])
+end
+
+def run_suite : Nil
+  describe "CORSHandler" do
+    it "lets GET through and adds Allow-Origin" do
+      cors_app do |made95|
+        dispatch(made95, "GET", "/x") do |ctx|
+          assert ctx.response.body == "ok"
+          assert ctx.response.headers["access-control-allow-origin"] == "*"
+        end
+      end
+    end
+
+    it "leaves a plain OPTIONS to the route" do
+      cors_app do |made97|
+        dispatch(made97, "OPTIONS", "/x") do |made98|
+          assert made98.response.body == "opt"
+        end
+      end
+    end
+
+    it "answers a preflight with 204 and no body" do
+      http_request("OPTIONS", "/x") do |pre|
+        pre.headers["Access-Control-Request-Method"] = "POST"
+        cors_app do |made100|
+          dispatch(made100, pre) do |ctx|
+            assert ctx.response.status_code == 204
+            assert ctx.response.body == ""
+            assert ctx.response.headers["access-control-allow-methods"].includes?("POST")
+          end
+        end
+      end
+    end
+  end
+end
+
+run_suite

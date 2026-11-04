@@ -9,28 +9,29 @@ import std/file::{File}
 import std/socket::{IyiSocket}
 import web/file_body::*
 import web/range::{byteranges_body}
-import web/response::{Response}
-import web/router::{Router, RouteHandler}
-import web/handler::{chain}
+import web/response::{Response, Wire}
+import web/handler::{Handler}
+import web/context::{Context}
 import web/server::{Server}
 import web/config::{Config}
 import web/harness::*
+import web/headers::{Headers}
 import web/spec::*
 
 # *size* bytes of numbered lines, so no two offsets a chunk apart hold the
 # same text and a misplaced chunk cannot go unnoticed.
 def numbered(size : Int32) : String
-  lines = [] of String
+  lines = String::Builder.new
   total = 0
   index = 0
   while total < size
     digits = index.to_s
     line = "0" * (7 - digits.bytesize) + digits + "\n"
-    lines << line
+    lines.append(line)
     total = total + line.bytesize
     index = index + 1
   end
-  lines.join[0, size]
+  lines.finish[0, size]
 end
 
 # The first response on *client*, read to the end its `Content-Length`
@@ -38,113 +39,177 @@ end
 # rather than hanging it.
 def read_frame(client : IyiSocket) : String
   client.read_timeout_ms = 5000
-  buffer = ""
+  buffer = String::Builder.new
   loop do
-    size = http_frame_size(buffer)
+    size = http_frame_size(buffer.finish)
     break if size && buffer.bytesize >= size
     chunk = client.read(65536).or_panic
     break if chunk.empty?
-    buffer = buffer + chunk
+    buffer.append(chunk)
   end
-  buffer
+  buffer.finish
 end
 
 # Everything *client* receives until the server closes the connection.
 def read_to_close(client : IyiSocket) : String
   client.read_timeout_ms = 5000
-  buffer = ""
+  buffer = String::Builder.new
   loop do
     chunk = client.read(65536).or_panic
     break if chunk.empty?
-    buffer = buffer + chunk
+    buffer.append(chunk)
   end
-  buffer
+  buffer.finish
 end
 
-def attached(writes : Array(String)) : Response
-  response = Response.new
-  response.attach(->(bytes : String) { writes << bytes; nil }, "HTTP/1.1", true, false)
-  response
+class Recorder < Wire
+  @text : String::Builder
+  @frames : Array(Tuple(Int32, Int32))
+  def initialize
+    @text = String::Builder.new
+    @frames = [] of Tuple(Int32, Int32)
+  end
+  pub def write(bytes : String) : Nil
+    at = @text.bytesize
+    @text.append(bytes)
+    @frames << {at, bytes.bytesize}
+  end
+  def [](index : Int32) : String
+    at, size = @frames[index]
+    @text.finish[at, size]
+  end
+  def size : Int32
+    @frames.size
+  end
+  def empty? : Bool
+    @frames.empty?
+  end
 end
 
-content = numbered(3 * FILE_CHUNK_SIZE + 1234)
-size = content.bytesize.to_i64
-path = File.tempfile("web-file-body-", ".bin")
-File.write(path, content)
-binary = "application/octet-stream"
-
-router = Router.new
-router.get "/file" do |env|
-  env.send_file(path)
-end
-# Promises more bytes than the file holds: the file was cut short after
-# its size was looked at.
-router.get "/cut" do |env|
-  respond_file(env.response, path, size + 5000_i64, nil, binary, false)
+def attached(writes : Recorder, & : Response -> Nil) : Nil
+  response_headers1 = Headers.new
+  response = Response.new(response_headers1)
+  response.attach(writes, "HTTP/1.1", true, false)
+  yield response
 end
 
-cfg = Config.new
-cfg.logging = false
-server = Server.new(chain([RouteHandler.new(router)]), cfg)
-port = server.bind("127.0.0.1", 0)
+def attached(& : Response -> Nil) : Nil
+  writes = Recorder.new
+  attached(writes) { |response| yield response }
+end
 
-group do |g|
-  g.spawn do
+@[OnTape]
+pub struct Settings
+  getter path : String
+  getter size : Int64
+  getter type : String
+  def initialize(@path : String, @size : Int64, @type : String)
+  end
+end
+
+class FileRoutes < Handler
+  def initialize(@settings : Settings)
+    super()
+  end
+
+  pub def call(context : Context) : Nil
+    if context.request.path == "/cut"
+      respond_file(context.response, @settings.path,
+        @settings.size + 5000_i64, nil, @settings.type, false)
+    else
+      context.send_file(@settings.path)
+    end
+  end
+end
+
+pub class Factory
+  def self.with_handler(config : Settings,
+                        & : Handler, Config -> Nil) : Nil
+    options = Config.new
+    options.logging = false
+    handler = FileRoutes.new(config)
+    cache = FileCache.new
+    handler.file_cache = cache
+    yield handler, options
+  end
+
+  def self.listening(port : Int32) : Nil
+    server_listening(Factory, port)
+  end
+end
+
+def run_suite : Nil
+  content = numbered(3 * FILE_CHUNK_SIZE + 1234)
+  size = content.bytesize.to_i64
+  path = File.tempfile("web-file-body-", ".bin")
+  File.write(path, content)
+  defer File.delete(path)
+  binary = "application/octet-stream"
+  cache = FileCache.new
+  with_server(Settings.new(path, size, binary), Factory) do |server|
+    port = server.bound_port
     describe "respond_file" do
       it "flushes a body larger than one chunk a chunk at a time" do
-        writes = [] of String
-        response = attached(writes)
-        respond_file(response, path, size, nil, binary, false)
-        assert writes[0].starts_with?("HTTP/1.1 200 OK\r\n")
-        assert writes[0].includes?("Content-Length: " + size.to_s + "\r\n")
-        assert !writes[0].includes?("Transfer-Encoding")
-        body = ""
-        index = 1
-        while index < writes.size
-          assert writes[index].bytesize <= FILE_CHUNK_SIZE
-          body = body + writes[index]
-          index = index + 1
+        writes = Recorder.new
+        attached(writes) do |response|
+          respond_file(response, path, size, nil, binary, false)
+          assert writes[0].starts_with?("HTTP/1.1 200 OK\r\n")
+          assert writes[0].includes?("Content-Length: " + size.to_s + "\r\n")
+          assert !writes[0].includes?("Transfer-Encoding")
+          body_io = String::Builder.new
+          index = 1
+          while index < writes.size
+            assert writes[index].bytesize <= FILE_CHUNK_SIZE
+            body_io.append(writes[index])
+            index = index + 1
+          end
+          body = body_io.finish
+          assert body == content
+          sent = writes.size
+          response.finish
+          assert writes.size == sent
+          assert response.reusable?
         end
-        assert body == content
-        sent = writes.size
-        response.finish
-        assert writes.size == sent
-        assert response.reusable?
       end
 
       it "buffers a body of one chunk or less and streams one byte more" do
         File.tempfile("web-chunk-", ".bin") do |exact|
           File.write(exact, content[0, FILE_CHUNK_SIZE])
-          writes = [] of String
-          response = attached(writes)
-          respond_file(response, exact, FILE_CHUNK_SIZE.to_i64, nil, binary, false)
-          assert writes.empty?
-          assert !response.headers_sent?
-          assert response.body == content[0, FILE_CHUNK_SIZE]
+          writes = Recorder.new
+          attached(writes) do |response|
+            respond_file(response, exact, FILE_CHUNK_SIZE.to_i64, nil, binary, false)
+            assert writes.empty?
+            assert !response.headers_sent?
+            assert response.body == content[0, FILE_CHUNK_SIZE]
 
-          File.write(exact, content[0, FILE_CHUNK_SIZE + 1])
-          over = attached(writes)
-          respond_file(over, exact, FILE_CHUNK_SIZE.to_i64 + 1_i64, nil, binary, false)
-          assert over.headers_sent?
-          assert writes.size == 3
-          assert writes[1] + writes[2] == content[0, FILE_CHUNK_SIZE + 1]
+            File.write(exact, content[0, FILE_CHUNK_SIZE + 1])
+            attached(writes) do |over|
+              respond_file(over, exact, FILE_CHUNK_SIZE.to_i64 + 1_i64, nil, binary, false)
+              assert over.headers_sent?
+              assert writes.size == 3
+              assert writes[1] + writes[2] == content[0, FILE_CHUNK_SIZE + 1]
+            end
+          end
         end
       end
 
       it "serves a small file again from memory, and a changed one anew" do
         File.tempfile("web-cache-", ".txt") do |small|
           File.write(small, "first")
-          once = attached([] of String)
-          respond_file(once, small, 5_i64, nil, binary, false)
-          assert once.body == "first"
-          again = attached([] of String)
-          respond_file(again, small, 5_i64, nil, binary, false)
-          assert again.body == "first"
+          attached do |once|
+            respond_file(once, small, 5_i64, nil, binary, false, cache)
+            assert once.body == "first"
+            attached do |again|
+              respond_file(again, small, 5_i64, nil, binary, false, cache)
+              assert again.body == "first"
 
-          File.write(small, "second")
-          changed = attached([] of String)
-          respond_file(changed, small, 6_i64, nil, binary, false)
-          assert changed.body == "second"
+              File.write(small, "second")
+              attached do |changed|
+                respond_file(changed, small, 6_i64, nil, binary, false, cache)
+                assert changed.body == "second"
+              end
+            end
+          end
         end
       end
 
@@ -206,14 +271,7 @@ group do |g|
         assert http_body(whole) == content
       end
     end
-
-    server.close
-    File.delete(path)
-    0
-  end
-
-  g.spawn do
-    server.listen
-    0
   end
 end
+
+run_suite

@@ -24,26 +24,49 @@ module web/templates
 
 import std/eiy::{Eiy}
 
-# The `content_for` blocks of one `render(view, layout)`, by key. Each render
-# makes its own, so two renders never see each other's blocks.
-pub class ContentBlocks
-  @blocks : Hash(String, String)
-
+# A package-owned print target copies each fragment before its scope ends.
+pub class TemplateBuffer
   def initialize
-    @blocks = {} of String => String
+    @text = String::Builder.new
   end
 
-  # Runs the block against a fresh buffer and keeps what it printed under
-  # *key*. A later capture of the same key replaces the earlier one.
-  pub def capture(key : String, & : Eiy::Buffer -> Nil) : Nil
-    buffer = Eiy::Buffer.new
+  pub def print(text : String) : Nil
+    @text.append(text)
+    nil
+  end
+
+  pub def print(value : T) : Nil forall T
+    @text << value
+    nil
+  end
+
+  pub def to_s : String
+    String.new(@text.finish)
+  end
+end
+
+pub class ContentBlocks
+  def initialize
+    @text = String::Builder.new
+    @blocks = {} of String => Tuple(Int32, Int32)
+  end
+
+  pub def capture(key : String, & : TemplateBuffer -> Nil) : Nil
+    buffer = TemplateBuffer.new
     yield buffer
-    @blocks[key] = buffer.to_s
+    body = buffer.to_s
+    at = @text.bytesize
+    @text.append(body)
+    @blocks[key] = {at, body.bytesize}
+    nil
   end
 
-  # What was captured under *key*, or "" when nothing was.
   pub def [](key : String) : String
-    @blocks[key]? || ""
+    if span = @blocks[key]?
+      @text.finish[span[0], span[1]]
+    else
+      ""
+    end
   end
 end
 
@@ -52,41 +75,58 @@ end
 # render's buffer, blocks or `content`.
 pub struct Templates
   # A buffer for one template, and the text it collected.
-  pub def self.partial(& : Eiy::Buffer -> Nil) : String
-    buffer = Eiy::Buffer.new
+  pub def self.partial(buffer : TemplateBuffer,
+                       & : TemplateBuffer -> Nil) : String
     yield buffer
     buffer.to_s
   end
 
   # The view's buffer and the render's blocks; the block answers the page.
-  pub def self.page(& : Eiy::Buffer, ContentBlocks -> String) : String
-    yield Eiy::Buffer.new, ContentBlocks.new
+  pub def self.page(buffer : TemplateBuffer, blocks : ContentBlocks,
+                    & : TemplateBuffer, ContentBlocks -> String) : String
+    yield buffer, blocks
   end
 
   # The rendered view as `content`, and a buffer for the layout.
-  pub def self.layout(content : String, & : String, Eiy::Buffer -> Nil) : String
-    buffer = Eiy::Buffer.new
+  pub def self.layout(content : String, buffer : TemplateBuffer,
+                      & : String, TemplateBuffer -> Nil) : String
     yield content, buffer
     buffer.to_s
   end
 end
 
+# std's macro currently stringifies String.view wrappers around a literal.
+# Keep the compatibility normalization at this package's macro boundary.
+pub macro embed_file(filename, io_name)
+  {{ run("./template_process", @caller.first.filename || "", filename,
+    io_name.id.stringify) }}
+end
+
 # The template at *filename*, rendered to a String with the caller's locals
 # in scope.
 pub macro render(filename)
-  ::Web::Templates::Templates.partial do |__web_io__|
-    ::Std::Eiy::Eiy.embed({{ filename }}, __web_io__)
+  begin
+    %buffer = ::Web::Templates::TemplateBuffer.new
+    ::Web::Templates::Templates.partial(%buffer) do |__web_io__|
+      ::Web::Templates.embed_file({{ filename }}, __web_io__)
+    end
   end
 end
 
-# The view at *filename* rendered first, then the layout at *layout* with
-# the view's text as `content`; answers the layout's text. The layout sees
-# the caller's locals and the ones the view assigned.
+# Owner declarations stay at the expansion site. Scoped parameters keep
+# nested views/layouts from overwriting their caller's current print target.
 pub macro render(filename, layout)
-  ::Web::Templates::Templates.page do |__web_io__, __web_blocks__|
-    ::Std::Eiy::Eiy.embed({{ filename }}, __web_io__)
-    ::Web::Templates::Templates.layout(__web_io__.to_s) do |content, __web_io__|
-      ::Std::Eiy::Eiy.embed({{ layout }}, __web_io__)
+  begin
+    %buffer = ::Web::Templates::TemplateBuffer.new
+    %blocks = ::Web::Templates::ContentBlocks.new
+    ::Web::Templates::Templates.page(%buffer, %blocks) do |__web_io__,
+                                                         __web_blocks__|
+      ::Web::Templates.embed_file({{ filename }}, __web_io__)
+      %layout_io = ::Web::Templates::TemplateBuffer.new
+      ::Web::Templates::Templates.layout(__web_io__.to_s,
+        %layout_io) do |content, __web_io__|
+        ::Web::Templates.embed_file({{ layout }}, __web_io__)
+      end
     end
   end
 end

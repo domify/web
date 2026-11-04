@@ -29,8 +29,8 @@
 module web/intake
 
 import std/http::{HTTP, Server, ParsedHead, HeadError, Field}
-import web/request::{Request, ParseError, Arrived, request_from, arrived_from, content_length}
-import std/slice::{Bytes}
+import web/headers::{Headers}
+import web/request::{Request, ParseError, Arrived, arrived_from, content_length}
 import std/socket::{IyiSocket, SocketError}
 import std/text
 
@@ -61,9 +61,8 @@ struct Framing
   end
 end
 
-@[OnTape]
-pub struct Intake
-  @bytes : Str::Builder
+pub class Intake
+  @bytes : String::Builder
   @max_body : Int32
   @searched : Int32
   @head_end : Int32
@@ -78,10 +77,15 @@ pub struct Intake
   @end_at : Int32
   @continue : Bool
   @declared : Int32
+  # What the parser fills once; the head's fields view the bytes.
+  @paths : String::Builder
+  @fields : Array(Field)
+  # A chunked request's bytes end here, before its decoded body.
+  @wire_end : Int32
 
   # *leftover* is what the connection's last request left unread.
-  def initialize(leftover : String, @max_body : Int32)
-    @bytes = Str::Builder.new(leftover.bytesize < 4096 ? 4096 : leftover.bytesize)
+  def initialize(@max_body : Int32)
+    @bytes = String::Builder.new(4096)
     @searched = 0
     @head_end = -1
     @framed = false
@@ -95,7 +99,9 @@ pub struct Intake
     @end_at = -1
     @continue = false
     @declared = 0
-    append(leftover)
+    @paths = String::Builder.new
+    @fields = Array(Field).new(16)
+    @wire_end = 0
   end
 
   pub def append(chunk : String) : Nil
@@ -103,9 +109,6 @@ pub struct Intake
   end
 
   # Bytes read before the request's tape opened.
-  pub def append(chunk : Bytes) : Nil
-    chunk.each { |byte| @bytes.push(byte) }
-  end
 
   # Up to *max* bytes off *client*, straight onto the end of the request.
   pub def read_from(client : IyiSocket, max : Int32) : Int32 | Cancelled | SocketError
@@ -136,10 +139,7 @@ pub struct Intake
       end
       bytes = @bytes.finish
       max_body = @max_body
-      framed = nil.as(Framing | ParseError | TooLarge | Nil)
-      local_tape do
-        framed = Intake.framing(bytes, max_body)
-      end
+      framed = Intake.framing(bytes, max_body)
       case framed
       in Nil
         return ParseError.new("incomplete request")
@@ -161,37 +161,70 @@ pub struct Intake
     @chunked ? scan_chunks : @bytes.length >= @need
   end
 
-  # The request with what follows it and whether the client asked to
-  # close, a refusal, or nil when more has to arrive. Parses the head on
-  # the request's tape; a read loop calls `ready` and this once after it.
-  pub def take : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
+  # The request, a refusal, or nil when more has to arrive. Its text is
+  # kept in *headers*, which the caller declares; `rest` is what the client
+  # sent after it. A read loop calls `ready` and this once after it.
+  pub def take(headers : Headers, & : Request | ParseError | TooLarge | Nil -> Nil) : Nil
     case ready = self.ready
     in ParseError
-      return ready
+      yield ready
+      return
     in TooLarge
-      return ready
+      yield ready
+      return
     in Bool
-      return nil unless ready
-    end
-    case head = Server.parse_head(@bytes.finish)
-    in Nil
-      ParseError.new("incomplete request")
-    in HeadError
-      ParseError.new(head.message)
-    in ParsedHead
-      if @chunked
-        finish(request_from(head, decode_body), @end_at)
-      else
-        body = @declared > 0 ? copy(@bytes, head.body_start, @declared) : ""
-        finish(request_from(head, body), head.body_start + @declared)
+      unless ready
+        yield nil
+        return
       end
     end
+    wire = @bytes.finish
+    fields = Array(Field).new(16)
+    case head = Server.parse_head(wire, 0, true, fields)
+    in Nil
+      yield ParseError.new("incomplete request")
+    in HeadError
+      yield ParseError.new(head.message)
+    in ParsedHead
+      body = @chunked ? decode_body : (@declared > 0 ? wire[head.body_start, @declared] : "")
+      @end_at = head.body_start + @declared unless @chunked
+      request = Request.new(head, body, headers)
+      refusal = request.refusal
+      if refusal
+        yield refusal
+      else
+        yield request
+      end
+    end
+  end
+
+  # Caller-owned fields and request object for direct server dispatch.
+  pub def request_head(fields : Array(Field)) : ParsedHead | HeadError | Nil
+    Server.parse_head(@bytes.finish, 0, true, fields)
+  end
+
+  pub def request_body : String
+    @end_at = @body_start + @declared unless @chunked
+    @chunked ? decode_body : @bytes.finish[@body_start, @declared]
+  end
+
+  # What the client sent after the request `take` gave.
+  pub def rest : String
+    wire = @bytes.finish
+    at = @end_at
+    stop = @chunked ? @wire_end : wire.bytesize
+    at >= 0 && at < stop ? wire[at, stop - at] : ""
   end
 
   # `take` as an `Arrived`: the head's views and the body where they lie
   # on the request's tape. A chunked body is decoded once, on the heap.
   # Nil for an absolute-form target, which `take` reads instead.
   pub def take_arrived : Arrived | ParseError | TooLarge | Nil
+    take_arrived(@fields)
+  end
+
+  pub def take_arrived(fields : Array(Field)) : Arrived | ParseError |
+                                               TooLarge | Nil
     case ready = self.ready
     in ParseError
       return ready
@@ -200,7 +233,9 @@ pub struct Intake
     in Bool
       return nil unless ready
     end
-    case head = Server.parse_head(@bytes.finish)
+    wire = @bytes.finish
+    fields.clear
+    case head = Server.parse_head(wire, 0, true, fields)
     in Nil
       ParseError.new("incomplete request")
     in HeadError
@@ -208,23 +243,13 @@ pub struct Intake
     in ParsedHead
       at = @chunked ? @end_at : head.body_start + @declared
       body = if @chunked
-               decode_body.as_tape
+               decode_body
              else
-               @declared > 0 ? @bytes.finish[head.body_start, @declared] : "".as_tape
+               @declared > 0 ? wire[head.body_start, @declared] : ""
              end
-      rest = at < @bytes.length ? copy(@bytes, at, @bytes.length - at) : ""
-      arrived_from(head, body, rest)
-    end
-  end
-
-  # The request with what the client sent after it, from *at* on.
-  private def finish(built : Tuple(Request, Bool) | ParseError, at : Int32) : Tuple(Request, String, Bool) | ParseError
-    case built
-    in ParseError
-      built
-    in Tuple(Request, Bool)
-      rest = at < @bytes.length ? copy(@bytes, at, @bytes.length - at) : ""
-      {built[0], rest, built[1]}
+      stop = @chunked ? @wire_end : wire.bytesize
+      arrived_from(head, body, at < stop ? wire[at, stop - at] : "",
+        @paths)
     end
   end
 
@@ -247,8 +272,9 @@ pub struct Intake
 
   # How much body follows the head in *bytes*, read from its fields where
   # they lie. Runs in a `local_tape`: the parsed head stays there.
-  def self.framing(bytes : Str, max_body : Int32) : Framing | ParseError | TooLarge | Nil
-    head = Server.parse_head(bytes)
+  def self.framing(bytes : String, max_body : Int32) : Framing | ParseError | TooLarge | Nil
+    fields = Array(Field).new(16)
+    head = Server.parse_head(bytes, 0, true, fields)
     case head
     in Nil
       return nil
@@ -257,7 +283,6 @@ pub struct Intake
     in ParsedHead
     end
     body_start = head.body_start
-    fields = head.fields
     length = nil.as(Field?)
     lengths_differ = false
     encodings = 0
@@ -299,7 +324,7 @@ pub struct Intake
     Framing.new(body_start + declared.to_i32, declared.to_i32, false, body_start, expects && declared > 0)
   end
 
-  private def self.same_bytes?(a : Str, b : Str) : Bool
+  private def self.same_bytes?(a : String, b : String) : Bool
     return false unless a.bytesize == b.bytesize
     i = 0
     while i < a.bytesize
@@ -312,7 +337,7 @@ pub struct Intake
   # Checks what has arrived of a chunked body, without copying it: true
   # once its last chunk and trailers are in (`@end_at` is just past them).
   private def scan_chunks : Bool | ParseError | TooLarge
-    s = Str::Scanner.new(@bytes.finish)
+    s = String::Scanner.new(@bytes.finish)
     s.offset = @scan
     # Kept at each step's start: a refusal comes before the step moves.
     while (@scan = s.offset) && !s.eos?
@@ -359,26 +384,24 @@ pub struct Intake
     false
   end
 
-  # The chunked body, checked by `scan_chunks`, decoded into one string.
+  # The chunked body, checked by `scan_chunks`, decoded onto the end of the
+  # bytes: a view of it, beside the wire form it came from.
   private def decode_body : String
     p = @bytes.finish
+    @wire_end = p.bytesize
     total = @body_size.to_i32
-    String.build(total) do |io|
-      at = @body_start
-      written = 0
-      while written < total
-        line_end = find_crlf(at) || at # checked by scan_chunks: always found
-        size = chunk_size(at, line_end).to_i32
-        at = line_end + 2
-        k = 0
-        while k < size
-          io.write_byte(p[at + k])
-          k = k + 1
-        end
-        written = written + size
-        at = at + size + 2
-      end
+    start = p.bytesize
+    at = @body_start
+    written = 0
+    while written < total
+      line_end = find_crlf(at) || at # checked by scan_chunks: always found
+      size = chunk_size(at, line_end).to_i32
+      at = line_end + 2
+      @bytes.append(p[at, size])
+      written = written + size
+      at = at + size + 2
     end
+    @bytes.finish[start, total]
   end
 
   # The chunk size written between *from* and *to*, without its
@@ -429,10 +452,4 @@ pub struct Intake
     nil
   end
 
-
-  # Where bytes leave the request's tape: the body, for the `Request` the
-  # handler keeps, and what follows the request, for the connection's next.
-  private def copy(buffer : Str::Builder, from : Int32, count : Int32) : String
-    buffer.finish[from, count].to_heap
-  end
 end

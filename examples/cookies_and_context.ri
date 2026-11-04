@@ -14,71 +14,161 @@ import web/dsl::*
 
 # Session token => user name. The cookie carries only an unguessable
 # token, read from the operating system's random source.
-SESSIONS = {} of String => String
+
 
 def new_token : String
   random = File.open("/dev/urandom")
+  defer random.close
   bytes = random.read_bytes(24)
-  random.close
   Base64.urlsafe_encode(bytes)
 end
 
 # Filters, handlers and routes share values through `env.set` and
 # `env.get?`; a value keeps its type (String, Int32, Int64, Float64, Bool or
 # nil). Cookies arrive decoded.
-before_all do |env|
-  if token = env.cookies["session"]?
-    env.set("user", SESSIONS[token]?)
+
+import web/headers::{Headers}
+import web/handler::{Handler}
+import web/router::{Router}
+import web/config::{Config}
+
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+
+class Route1 < RouteAction
+  def initialize(@sessions : Headers)
   end
-  visits = (env.cookies["visits"]? || "0").to_i? || 0
-  env.set("visits", visits + 1)
-end
 
-get "/" do |env|
-  visits = env.get("visits")
-  # `get` answers the union of storable types; narrow it to use it as one.
-  count = visits.is_a?(Int32) ? visits : 1
-  env.set_cookie("visits", count.to_s, max_age: 365 * 86400, same_site: "Lax")
-  "Visit number " + count.to_s
-end
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
 
-# 303 See Other: the browser follows a form POST with a GET.
-post "/sign-in" do |env|
-  name = env.params.body["name"]? || ""
-  if name.empty?
-    env.halt(422, "A name is required")
-  else
-    token = new_token
-    SESSIONS[token] = name
-    # `http_only` keeps scripts from reading it; add `secure: true` behind HTTPS.
-    env.set_cookie("session", token, http_only: true, same_site: "Lax", max_age: 86400)
-    env.redirect("/account", 303)
+  private def perform(env : Context)
+    if token = env.cookies["session"]?
+      env.set("user", @sessions[token]?)
+    end
+    visits = (env.cookies["visits"]? || "0").to_i? || 0
+    env.set("visits", visits + 1)
   end
 end
 
-get "/account" do |env|
-  user = env.get?("user")
-  if user.is_a?(String)
-    "Signed in as " + user
-  else
-    # A redirect skips the rest of the chain; the route's value is dropped.
-    env.redirect("/")
-    ""
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    visits = env.get("visits")
+    # `get` answers the union of storable types; narrow it to use it as one.
+    count = visits.is_a?(Int32) ? visits : 1
+    env.set_cookie("visits", count.to_s, max_age: 365 * 86400, same_site: "Lax")
+    "Visit number " + count.to_s
   end
 end
 
-post "/sign-out" do |env|
-  if token = env.cookies["session"]?
-    SESSIONS.delete(token)
+class Route3 < RouteAction
+  def initialize(@sessions : Headers)
   end
-  # Deleting needs the same `path` and `domain` the cookie was set with.
-  env.delete_cookie("session")
-  env.redirect("/", 303)
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    name = env.params.body["name"]? || ""
+    if name.empty?
+      env.halt(422, "A name is required")
+    else
+      token = new_token
+      @sessions[token] = name
+      # `http_only` keeps scripts from reading it; add `secure: true` behind HTTPS.
+      env.set_cookie("session", token, http_only: true, same_site: "Lax", max_age: 86400)
+      env.redirect("/account", 303)
+    end
+  end
 end
 
-# An old address, moved for good.
-get "/profile" do |env|
-  env.redirect("/account", 301)
+class Route4 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    user = env.get?("user")
+    if user.is_a?(String)
+      "Signed in as " + user
+    else
+      # A redirect skips the rest of the chain; the route's value is dropped.
+      env.redirect("/")
+      ""
+    end
+  end
 end
 
-run
+class Route5 < RouteAction
+  def initialize(@sessions : Headers)
+  end
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    if token = env.cookies["session"]?
+      @sessions.delete(token)
+    end
+    # Deleting needs the same `path` and `domain` the cookie was set with.
+    env.delete_cookie("session")
+    env.redirect("/", 303)
+  end
+end
+
+class Route6 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.redirect("/account", 301)
+  end
+end
+
+
+pub class Factory
+  def self.with_handler(data : Int32,
+                        & : Handler, Config -> Nil) : Nil
+    router = Router.new("")
+    options = Config.new
+    application = App.new(router, options)
+    sessions = Headers.new
+    route_action_1 = Route1.new(sessions)
+    application.before_all(route_action_1)
+
+    route_action_2 = Route2.new
+    application.get("/", route_action_2)
+
+    # 303 See Other: the browser follows a form POST with a GET.
+    route_action_3 = Route3.new(sessions)
+    application.post("/sign-in", route_action_3)
+
+    route_action_4 = Route4.new
+    application.get("/account", route_action_4)
+
+    route_action_5 = Route5.new(sessions)
+    application.post("/sign-out", route_action_5)
+
+    # An old address, moved for good.
+    route_action_6 = Route6.new
+    application.get("/profile", route_action_6)
+
+
+    with_handler_chain(application) do |handler|
+      yield handler, options
+    end
+    nil
+  end
+end
+
+# A single task owns this example's in-memory store across requests.
+run(0, Factory, tasks: 1)

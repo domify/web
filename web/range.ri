@@ -86,16 +86,16 @@ end
 # response's own type is `multipart/byteranges; boundary=<boundary>`.
 pub def byteranges_body(body : String, ranges : Array(Tuple(Int32, Int32)), content_type : String, boundary : String) : String
   size = body.bytesize.to_i64
-  parts = [] of String
+  text = String::Builder.new(body.bytesize + 128)
   ranges.each do |pair|
     first = pair[0]
     last = pair[1]
-    parts << byteranges_part_head(first.to_i64, last.to_i64, size, content_type, boundary)
-    parts << body[first, last - first + 1]
-    parts << "\r\n"
+    text.append(byteranges_part_head(first.to_i64, last.to_i64, size, content_type, boundary))
+    text.append(body[first, last - first + 1])
+    text.append("\r\n")
   end
-  parts << byteranges_tail(boundary)
-  parts.join
+  text.append(byteranges_tail(boundary))
+  text.finish
 end
 
 # What comes before the bytes of one part of a `multipart/byteranges`
@@ -187,7 +187,7 @@ end
 private def parse_position(text : String) : Int64?
   return nil if text.empty?
   value = 0_i64
-  bytes = text.as_tape
+  bytes = text
   index = 0
   while index < text.bytesize
     byte = bytes[index]

@@ -6,49 +6,138 @@ import std/time::{Span}
 import web/event_stream::{EventStream}
 import web/context::{Context}
 import web/harness::*
+import web/context::{with_context}
+import web/router::{Router, RouteHandler}
+import web/handler::{Handler}
 import web/spec::*
 
-def events
-  routes do |r|
-    r.sse "/events" do |stream, env|
-      stream.send("hello", event: "greet", id: 1)
-      stream.send("a\nb\r\nc", retry: Span.milliseconds(1500))
-      stream.comment("ping")
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+import web/event_stream::{EventStream}
+
+import web/router::{Route, SocketRoute}
+import web/radix::{Tree}
+import web/config::{Config}
+
+class Route1 < RouteAction
+  pub def call(env : Context) : String
+    EventStream.serve(env) do |stream|
+      perform(stream, env)
     end
-    r.sse "/rooms/:room" do |stream, env|
-      stream.send("room " + env.params.url["room"])
+    ""
+  end
+
+  private def perform(stream : EventStream, env : Context)
+    stream.send("hello", event: "greet", id: 1)
+    stream.send("a\nb\r\nc", retry: Span.milliseconds(1500))
+    stream.comment("ping")
+  end
+end
+
+class Route2 < RouteAction
+  pub def call(env : Context) : String
+    EventStream.serve(env) do |stream|
+      perform(stream, env)
     end
-    r.sse "/closed" do |stream, env|
-      stream.close
-      stream.send("late")
+    ""
+  end
+
+  private def perform(stream : EventStream, env : Context)
+    stream.send("room " + env.params.url["room"])
+  end
+end
+
+class Route3 < RouteAction
+  pub def call(env : Context) : String
+    EventStream.serve(env) do |stream|
+      perform(stream, env)
+    end
+    ""
+  end
+
+  private def perform(stream : EventStream, env : Context)
+    stream.close
+    stream.send("late")
+  end
+end
+
+
+def events(& : Handler -> Nil) : Nil
+  router16 = Router.new("")
+  route_action_1 = Route1.new
+  router16.get("/events", route_action_1)
+  route_action_2 = Route2.new
+  router16.get("/rooms/:room", route_action_2)
+  route_action_3 = Route3.new
+  router16.get("/closed", route_action_3)
+  route_options_1 = Config.new
+  route_tree_1 = Tree(Int32).new
+  socket_tree_1 = Tree(Int32).new
+  route_handler_1 = RouteHandler.new(route_tree_1, socket_tree_1, route_options_1)
+  route_handler_1.load(router16)
+  routed16 = route_handler_1
+  yield routed16
+end
+
+def run_suite : Nil
+  describe "EventStream" do
+    it "writes fields, data lines and comments in the event-stream format" do
+      events do |made186|
+        dispatch(made186, "GET", "/events") do |ctx|
+          assert ctx.response.status_code == 200
+          assert ctx.response.body == "event: greet\nid: 1\ndata: hello\n\nretry: 1500\ndata: a\ndata: b\ndata: c\n\n: ping\n\n"
+          assert ctx.response.headers["content-type"] == "text/event-stream; charset=utf-8"
+          assert ctx.response.headers["cache-control"] == "no-cache"
+          assert ctx.response.headers["x-accel-buffering"] == "no"
+        end
+      end
+    end
+
+    it "passes the context, url params included" do
+      events do |made188|
+        dispatch(made188, "GET", "/rooms/lobby") do |made189|
+          assert made189.response.body == "data: room lobby\n\n"
+        end
+      end
+    end
+
+    it "answers HEAD with the headers and no events" do
+      events do |made190|
+        dispatch(made190, "HEAD", "/events") do |ctx|
+          assert ctx.response.status_code == 200
+          assert ctx.response.body == ""
+          assert ctx.response.headers["content-type"] == "text/event-stream; charset=utf-8"
+        end
+      end
+    end
+
+    it "refuses an event name or id with a line break, and writing after close" do
+      assert(panics? do
+        http_request("GET", "/") do |request|
+          with_context(request) do |ctx|
+            stream = EventStream.new(ctx)
+            stream.send("x", event: "a\nb")
+            nil
+          end
+        end
+      end)
+      assert(panics? do
+        http_request("GET", "/") do |request|
+          with_context(request) do |ctx|
+            stream = EventStream.new(ctx)
+            stream.send("x", id: "1\r2")
+            nil
+          end
+        end
+      end)
+      assert(panics? do
+        events do |handler|
+          dispatch(handler, "GET", "/closed") { |_ctx| }
+        end
+      end)
     end
   end
 end
 
-describe "EventStream" do
-  it "writes fields, data lines and comments in the event-stream format" do
-    ctx = dispatch(events, "GET", "/events")
-    assert ctx.response.status_code == 200
-    assert ctx.response.body == "event: greet\nid: 1\ndata: hello\n\nretry: 1500\ndata: a\ndata: b\ndata: c\n\n: ping\n\n"
-    assert ctx.response.headers["content-type"] == "text/event-stream; charset=utf-8"
-    assert ctx.response.headers["cache-control"] == "no-cache"
-    assert ctx.response.headers["x-accel-buffering"] == "no"
-  end
-
-  it "passes the context, url params included" do
-    assert dispatch(events, "GET", "/rooms/lobby").response.body == "data: room lobby\n\n"
-  end
-
-  it "answers HEAD with the headers and no events" do
-    ctx = dispatch(events, "HEAD", "/events")
-    assert ctx.response.status_code == 200
-    assert ctx.response.body == ""
-    assert ctx.response.headers["content-type"] == "text/event-stream; charset=utf-8"
-  end
-
-  it "refuses an event name or id with a line break, and writing after close" do
-    assert panics? { EventStream.new(Context.for(http_request("GET", "/"))).send("x", event: "a\nb") }
-    assert panics? { EventStream.new(Context.for(http_request("GET", "/"))).send("x", id: "1\r2") }
-    assert panics? { dispatch(events, "GET", "/closed") }
-  end
-end
+run_suite

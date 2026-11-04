@@ -61,40 +61,42 @@ end
 # `%` sequences are left as written rather than rejected: a path is not
 # a place to 400 over a client that sent `%GG`.
 pub def decode(text : String, form : Bool = false) : String
-  String.build(text.bytesize) do |io|
-    index = 0
-    while index < text.bytesize
-      ch = text[index]
-      if form && ch == '+'
-        io.write_byte(32_u8)
-        index = index + 1
-      elsif ch == '%' && index + 2 < text.bytesize
-        hi = hex_value(text[index + 1])
-        lo = hex_value(text[index + 2])
-        if hi >= 0 && lo >= 0
-          io.write_byte((hi * 16 + lo).to_u8)
-          index = index + 3
-        else
-          io.write_byte(ch.ord.to_u8)
-          index = index + 1
-        end
+  io = String::Builder.new(text.bytesize + 1)
+  decode_onto(text, form, io)
+  io.finish
+end
+
+# Appends *text* decoded to *io*: what `decode` answers, for a caller that
+# keeps several decoded texts in one builder.
+pub def decode_onto(text : String, form : Bool, io : String::Builder) : Nil
+  index = 0
+  while index < text.bytesize
+    ch = text[index].unsafe_chr
+    if form && ch == '+'
+      io.write_byte(32_u8)
+      index = index + 1
+    elsif ch == '%' && index + 2 < text.bytesize
+      hi = hex_value(text[index + 1].unsafe_chr)
+      lo = hex_value(text[index + 2].unsafe_chr)
+      if hi >= 0 && lo >= 0
+        io.write_byte((hi * 16 + lo).to_u8)
+        index = index + 3
       else
-        io.write_byte(ch.ord.to_u8)
+        io.write_byte(text[index])
         index = index + 1
       end
+    else
+      io.write_byte(text[index])
+      index = index + 1
     end
   end
 end
 
-pub def decode_path(text : String) : String
-  decode(text, false)
-end
-
 # `decode_path` on the tape: *text* itself when it holds no escape, else
 # the decoded bytes written beside it.
-pub def decode_path(text : Str) : Str
+pub def decode_path(text : String) : String
   return text unless text.includes?('%')
-  decoded = Str::Builder.new(text.bytesize)
+  decoded = String::Builder.new(text.bytesize)
   index = 0
   while index < text.bytesize
     byte = text[index]
@@ -117,33 +119,101 @@ pub def decode_form(text : String) : String
   decode(text, true)
 end
 
+# *text* form-decoded onto *store*: a view of what it appended.
+pub def decoded_view(text : String, store : String::Builder) : String
+  at = store.bytesize
+  decode_onto(text, true, store)
+  store.finish[at, store.bytesize - at]
+end
+
 # `a=1&b=two+words` into a last-wins table. Empty values are kept, because
-# `?flag=` is a present flag with an empty string, not an absent one.
-pub def parse_query(text : String) : Hash(String, String)
-  table = {} of String => String
-  parse_query_pairs(text).each { |pair| table[pair[0]] = pair[1] }
-  table
+# `?flag=` is a present flag with an empty string, not an absent one. The
+# table owns the decoded text its entries view.
+@[OnTape]
+pub struct QueryTable
+  getter table : Hash(String, String)
+  @text : QueryPairs
+
+  def initialize(query : String)
+    @text = QueryPairs.new(query)
+    table = {} of String => String
+    @text.each { |pair| table[pair[0]] = pair[1] }
+    @table = table
+  end
+
+  pub def [](name : String) : String
+    @table[name]
+  end
+
+  pub def []?(name : String) : String?
+    @table[name]?
+  end
+
+  pub def empty? : Bool
+    @table.empty?
+  end
+
+  pub def size : Int32
+    @table.size
+  end
+end
+
+pub def parse_query(text : String) : QueryTable
+  QueryTable.new(text)
 end
 
 # Every name/value pair of a query or form body, decoded, in the order
 # sent: `tag=a&tag=b` is two pairs. Pairs with an empty name are dropped.
-pub def parse_query_pairs(text : String) : Array(Tuple(String, String))
-  pairs = [] of Tuple(String, String)
-  return pairs if text.empty?
+# The pairs view text the value owns.
+@[OnTape]
+pub struct QueryPairs
+  getter pairs : Array(Tuple(String, String))
+  @text : String::Builder
 
-  text.split('&').each do |pair|
-    next if pair.empty?
-    eq = pair.index('=')
-    if eq
-      name = decode_form(pair[0, eq])
-      value = decode_form(pair[eq + 1, pair.bytesize - eq - 1])
-      pairs << {name, value} unless name.empty?
-    else
-      name = decode_form(pair)
-      pairs << {name, ""} unless name.empty?
+  def initialize(query : String)
+    store = String::Builder.new(query.bytesize + 1)
+    pairs = [] of Tuple(String, String)
+    unless query.empty?
+      query.split('&').each do |pair|
+        next if pair.empty?
+        eq = pair.index('=')
+        if eq
+          name = decoded_view(pair[0, eq], store)
+          value = decoded_view(pair[eq + 1, pair.bytesize - eq - 1], store)
+          pairs << {name, value} unless name.empty?
+        else
+          name = decoded_view(pair, store)
+          pairs << {name, ""} unless name.empty?
+        end
+      end
+    end
+    @pairs = pairs
+    @text = store
+  end
+
+  pub def [](index : Int32) : Tuple(String, String)
+    @pairs[index]
+  end
+
+  pub def size : Int32
+    @pairs.size
+  end
+
+  pub def empty? : Bool
+    @pairs.empty?
+  end
+
+  pub def each(& : Tuple(String, String) -> Nil) : Nil
+    index = 0
+    while index < @pairs.size
+      yield @pairs[index]
+      index = index + 1
     end
   end
-  pairs
+end
+
+pub def parse_query_pairs(text : String) : QueryPairs
+  QueryPairs.new(text)
 end
 
 pub def extension_of(path : String) : String

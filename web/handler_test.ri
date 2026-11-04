@@ -1,10 +1,101 @@
 # Middleware is a subclass. The chain runs in order; halt skips the rest.
 module web/handler_test
 
-import web/handler::{Handler, chain}
+import web/handler::{Handler, HandlerRules, chain}
 import web/harness::*
 import web/context::{Context}
+import web/router::{Router, RouteHandler}
 import web/spec::*
+
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+
+import web/router::{Route, SocketRoute}
+import web/radix::{Tree}
+import web/config::{Config}
+
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    via = env["via"]?
+    via ? "ok:#{via}" : "ok"
+  end
+end
+
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "leaked"
+  end
+end
+
+class Route3 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["order"]? || ""
+  end
+end
+
+class Route4 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "ok"
+  end
+end
+
+class Route5 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "users"
+  end
+end
+
+class Route6 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "posted"
+  end
+end
+
+class Route7 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "healthy"
+  end
+end
+
+class Route8 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "public"
+  end
+end
+
 
 class StampHandler < Handler
   pub def call(ctx : Context) : Nil
@@ -35,12 +126,6 @@ class AppendHandler < Handler
 end
 
 class AdminOnly < Handler
-  def initialize
-    super()
-    only ["/admin", "/admin/*"], "*"
-    exclude ["/admin/health"]
-  end
-
   pub def call(ctx : Context) : Nil
     return call_next(ctx) unless only_match?(ctx)
     return call_next(ctx) if exclude_match?(ctx)
@@ -48,68 +133,114 @@ class AdminOnly < Handler
   end
 end
 
-describe "Handler" do
-  it "runs middleware before the route" do
-    handler = chain([StampHandler.new, routes { |r|
-      r.get "/" do |env|
-        via = env["via"]?
-        via ? "ok:#{via}" : "ok"
+def run_suite : Nil
+  describe "Handler" do
+    it "runs middleware before the route" do
+      router10 = Router.new("")
+      route_action_1 = Route1.new
+      router10.get("/", route_action_1)
+      route_options_1 = Config.new
+      route_tree_1 = Tree(Int32).new
+      socket_tree_1 = Tree(Int32).new
+      route_handler_1 = RouteHandler.new(route_tree_1, socket_tree_1, route_options_1)
+      route_handler_1.load(router10)
+      routed10 = route_handler_1
+      handler = chain([StampHandler.new, routed10])
+      dispatch(handler, "GET", "/") do |ctx|
+        assert ctx.response.body == "ok:stamp"
+        assert ctx["via"] == "stamp"
       end
-    }])
-    ctx = dispatch(handler, "GET", "/")
-    assert ctx.response.body == "ok:stamp"
-    assert ctx["via"] == "stamp"
-  end
+    end
 
-  it "skips the route after a halt" do
-    handler = chain([HaltHandler.new, routes { |r|
-      r.get "/secret" do |env|
-        "leaked"
+    it "skips the route after a halt" do
+      router11 = Router.new("")
+      route_action_2 = Route2.new
+      router11.get("/secret", route_action_2)
+      route_options_2 = Config.new
+      route_tree_2 = Tree(Int32).new
+      socket_tree_2 = Tree(Int32).new
+      route_handler_2 = RouteHandler.new(route_tree_2, socket_tree_2, route_options_2)
+      route_handler_2.load(router11)
+      routed11 = route_handler_2
+      handler = chain([HaltHandler.new, routed11])
+      dispatch(handler, "GET", "/secret") do |denied|
+        assert denied.response.status_code == 401
+        assert denied.response.body == "stopped"
       end
-    }])
-    denied = dispatch(handler, "GET", "/secret")
-    assert denied.response.status_code == 401
-    assert denied.response.body == "stopped"
-  end
+    end
 
-  it "walks the chain left to right" do
-    handler = chain([AppendHandler.new("a"), AppendHandler.new("b"), routes { |r|
-      r.get "/order" do |env|
-        env["order"]? || ""
+    it "walks the chain left to right" do
+      router12 = Router.new("")
+      route_action_3 = Route3.new
+      router12.get("/order", route_action_3)
+      route_options_3 = Config.new
+      route_tree_3 = Tree(Int32).new
+      socket_tree_3 = Tree(Int32).new
+      route_handler_3 = RouteHandler.new(route_tree_3, socket_tree_3, route_options_3)
+      route_handler_3.load(router12)
+      routed12 = route_handler_3
+      handler = chain([AppendHandler.new("a"), AppendHandler.new("b"), routed12])
+      dispatch(handler, "GET", "/order") do |made116|
+        assert made116.response.body == "a,b"
       end
-    }])
-    assert dispatch(handler, "GET", "/order").response.body == "a,b"
-  end
+    end
 
-  it "treats the base Handler as call_next" do
-    passthrough = Handler.new
-    passthrough.next_handler = routes { |r|
-      r.get "/" do |env|
-        "ok"
+    it "treats the base Handler as call_next" do
+      passthrough = Handler.new
+      router13 = Router.new("")
+      route_action_4 = Route4.new
+      router13.get("/", route_action_4)
+      route_options_4 = Config.new
+      route_tree_4 = Tree(Int32).new
+      socket_tree_4 = Tree(Int32).new
+      route_handler_4 = RouteHandler.new(route_tree_4, socket_tree_4, route_options_4)
+      route_handler_4.load(router13)
+      routed13 = route_handler_4
+      passthrough.next_handler = routed13
+      dispatch(passthrough, "GET", "/") do |made117|
+        assert made117.response.body == "ok"
       end
-    }
-    assert dispatch(passthrough, "GET", "/").response.body == "ok"
-  end
+    end
 
-  it "limits a handler to its only paths and lets exclude through" do
-    handler = chain([AdminOnly.new, routes { |r|
-      r.get "/admin/users" do |env|
-        "users"
+    it "limits a handler to its only paths and lets exclude through" do
+      router14 = Router.new("")
+      route_action_5 = Route5.new
+      router14.get("/admin/users", route_action_5)
+      route_action_6 = Route6.new
+      router14.post("/admin", route_action_6)
+      route_action_7 = Route7.new
+      router14.get("/admin/health", route_action_7)
+      route_action_8 = Route8.new
+      router14.get("/public", route_action_8)
+      route_options_5 = Config.new
+      route_tree_5 = Tree(Int32).new
+      socket_tree_5 = Tree(Int32).new
+      route_handler_5 = RouteHandler.new(route_tree_5, socket_tree_5, route_options_5)
+      route_handler_5.load(router14)
+      routed14 = route_handler_5
+      rules = HandlerRules.new
+      rules.only(["/admin", "/admin/*"], "*")
+      rules.exclude(["/admin/health"])
+      admin = AdminOnly.new
+      admin.rules = rules
+      handler = chain([admin, routed14])
+      dispatch(handler, "GET", "/admin/users") do |made118|
+        assert made118.response.status_code == 401
       end
-      r.post "/admin" do |env|
-        "posted"
+      dispatch(handler, "POST", "/admin") do |made119|
+        assert made119.response.status_code == 401
       end
-      r.get "/admin/health" do |env|
-        "healthy"
+      dispatch(handler, "HEAD", "/admin/users") do |made120|
+        assert made120.response.status_code == 401
       end
-      r.get "/public" do |env|
-        "public"
+      dispatch(handler, "GET", "/admin/health") do |made121|
+        assert made121.response.body == "healthy"
       end
-    }])
-    assert dispatch(handler, "GET", "/admin/users").response.status_code == 401
-    assert dispatch(handler, "POST", "/admin").response.status_code == 401
-    assert dispatch(handler, "HEAD", "/admin/users").response.status_code == 401
-    assert dispatch(handler, "GET", "/admin/health").response.body == "healthy"
-    assert dispatch(handler, "GET", "/public").response.body == "public"
+      dispatch(handler, "GET", "/public") do |made122|
+        assert made122.response.body == "public"
+      end
+    end
   end
 end
+
+run_suite

@@ -12,7 +12,11 @@ pub class OverrideMethodHandler < Handler
       override = ctx.params.body["_method"]?
       if override
         up = override.upcase
-        ctx.request.method = up if up.in?("PUT", "PATCH", "DELETE")
+        case up
+        when "PUT" then ctx.request.method = "PUT"
+        when "PATCH" then ctx.request.method = "PATCH"
+        when "DELETE" then ctx.request.method = "DELETE"
+        end
       end
     end
     call_next(ctx)

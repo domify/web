@@ -22,33 +22,12 @@ PAGE = <<-HTML
   </script>
   HTML
 
-get "/" do |env|
-  PAGE
-end
 
 # Headers go out with the first `flush`, so set them before it; the body
 # then goes out chunked, and later changes to headers are not sent.
-get "/export.csv" do |env|
-  env.response.content_type = "text/csv; charset=utf-8"
-  env.response.headers["Content-Disposition"] = "attachment; filename=\"export.csv\""
-  env.response.print("id,total\n")
-  env.response.flush
-  (1..5).each { |id| env.response.print(id.to_s + "," + (id * 10).to_s + "\n") }
-  # What is printed after the last flush is sent when the route returns.
-  nil
-end
 
 # Each flush reaches the client straight away; `sleep` parks this fiber
 # only, so other connections are served meanwhile.
-get "/countdown" do |env|
-  env.response.content_type = "text/plain; charset=utf-8"
-  [3, 2, 1].each do |n|
-    env.response.print(n.to_s + "...\n")
-    env.response.flush
-    sleep(500)
-  end
-  "Lift-off!\n"
-end
 
 # `sse` is a GET route answering `text/event-stream`; each `send` is one
 # event, flushed as it is sent, and the stream ends when the block returns.
@@ -56,16 +35,102 @@ end
 # stream can carry on from there; `retry:` sets its reconnect delay. When a
 # client leaves mid-stream the next write ends this route, with one panic
 # line on standard error; other connections carry on.
-sse "/ticks" do |stream, env|
-  first = (env.request.headers["Last-Event-ID"]? || "0").to_i? || 0
-  stream.send("connected", retry: Span.milliseconds(2000))
-  ((first + 1)..(first + 5)).each do |tick|
-    # Multi-line data goes out as one `data:` line per line.
-    stream.send("line one\nline two", event: "tick", id: tick)
-    # A comment line keeps idle proxies from closing the connection.
-    stream.comment("keep-alive") if tick.even?
-    sleep(300)
+
+
+import web/handler::{Handler}
+import web/router::{Router}
+import web/config::{Config}
+
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+import web/event_stream::{EventStream}
+
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    PAGE
   end
 end
 
-run
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.content_type = "text/csv; charset=utf-8"
+    env.response.headers["Content-Disposition"] = "attachment; filename=\"export.csv\""
+    env.response.print("id,total\n")
+    env.response.flush
+    (1..5).each { |id| env.response.print(id.to_s + "," + (id * 10).to_s + "\n") }
+    # What is printed after the last flush is sent when the route returns.
+    nil
+  end
+end
+
+class Route3 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.content_type = "text/plain; charset=utf-8"
+    [3, 2, 1].each do |n|
+      env.response.print(n.to_s + "...\n")
+      env.response.flush
+      sleep(500)
+    end
+    "Lift-off!\n"
+  end
+end
+
+class Route4 < RouteAction
+  pub def call(env : Context) : String
+    EventStream.serve(env) do |stream|
+      perform(stream, env)
+    end
+    ""
+  end
+
+  private def perform(stream : EventStream, env : Context)
+    first = (env.request.headers["Last-Event-ID"]? || "0").to_i? || 0
+    stream.send("connected", retry: Span.milliseconds(2000))
+    ((first + 1)..(first + 5)).each do |tick|
+      # Multi-line data goes out as one `data:` line per line.
+      stream.send("line one\nline two", event: "tick", id: tick)
+      # A comment line keeps idle proxies from closing the connection.
+      stream.comment("keep-alive") if tick.even?
+      sleep(300)
+    end
+  end
+end
+
+
+pub class Factory
+  def self.with_handler(data : Int32,
+                        & : Handler, Config -> Nil) : Nil
+    router = Router.new("")
+    options = Config.new
+    application = App.new(router, options)
+    route_action_1 = Route1.new
+    application.get("/", route_action_1)
+    route_action_2 = Route2.new
+    application.get("/export.csv", route_action_2)
+    route_action_3 = Route3.new
+    application.get("/countdown", route_action_3)
+    route_action_4 = Route4.new
+    application.get("/ticks", route_action_4)
+
+    with_handler_chain(application) do |handler|
+      yield handler, options
+    end
+    nil
+  end
+
+end
+
+run(0, Factory)

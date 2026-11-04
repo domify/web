@@ -5,7 +5,37 @@ import web/path::{PathHandler}
 import web/handler::{Handler, chain}
 import web/harness::*
 import web/context::{Context}
+import web/router::{Router, RouteHandler}
 import web/spec::*
+
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+
+import web/router::{Route, SocketRoute}
+import web/radix::{Tree}
+import web/config::{Config}
+
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "home"
+  end
+end
+
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "secret"
+  end
+end
+
 
 class GateHandler < Handler
   pub def call(ctx : Context) : Nil
@@ -13,29 +43,48 @@ class GateHandler < Handler
   end
 end
 
-def gated
-  chain([PathHandler.new("/api", GateHandler.new), routes { |r|
-    r.get "/" do |env|
-      "home"
-    end
-    r.get "/api/x" do |env|
-      "secret"
-    end
-  }])
+def gated(& : Handler -> Nil) : Nil
+  router9 = Router.new("")
+  route_action_1 = Route1.new
+  router9.get("/", route_action_1)
+  route_action_2 = Route2.new
+  router9.get("/api/x", route_action_2)
+  route_options_1 = Config.new
+  route_tree_1 = Tree(Int32).new
+  socket_tree_1 = Tree(Int32).new
+  route_handler_1 = RouteHandler.new(route_tree_1, socket_tree_1, route_options_1)
+  route_handler_1.load(router9)
+  routed9 = route_handler_1
+  yield chain([PathHandler.new("/api", GateHandler.new), routed9])
 end
 
-describe "PathHandler" do
-  it "skips the inner handler outside the prefix" do
-    assert dispatch(gated, "GET", "/").response.body == "home"
-  end
+def run_suite : Nil
+  describe "PathHandler" do
+    it "skips the inner handler outside the prefix" do
+      gated do |made108|
+        dispatch(made108, "GET", "/") do |made109|
+          assert made109.response.body == "home"
+        end
+      end
+    end
 
-  it "runs the inner handler under the prefix" do
-    denied = dispatch(gated, "GET", "/api/x")
-    assert denied.response.status_code == 401
-    assert denied.response.body == "gated"
-  end
+    it "runs the inner handler under the prefix" do
+      gated do |made110|
+        dispatch(made110, "GET", "/api/x") do |denied|
+          assert denied.response.status_code == 401
+          assert denied.response.body == "gated"
+        end
+      end
+    end
 
-  it "does not treat a string prefix as a path prefix" do
-    assert dispatch(gated, "GET", "/apiv2").response.status_code == 404
+    it "does not treat a string prefix as a path prefix" do
+      gated do |made112|
+        dispatch(made112, "GET", "/apiv2") do |made113|
+          assert made113.response.status_code == 404
+        end
+      end
+    end
   end
 end
+
+run_suite

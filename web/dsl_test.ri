@@ -6,11 +6,194 @@ import std/compress::{Gzip}
 import web/dsl::*
 import web/router::{Router, RouteHandler}
 import web/handler::{Handler}
+import web/path::{PathHandler}
+import std/file::{File}
 import web/context::{Context}
 import web/harness::*
-import web/config::*
+import web/config::{StaticHeadersHook}
 import web/log::{Logger}
 import web/spec::*
+
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+
+import web/router::{Route, SocketRoute}
+import web/radix::{Tree}
+import web/config::{Config}
+
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "from-dsl"
+  end
+end
+
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "posted-dsl"
+  end
+end
+
+class Route3 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.halt(401, "gated")
+    ""
+  end
+end
+
+class Route4 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "open"
+  end
+end
+
+class Route5 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "dsl-missing"
+  end
+end
+
+class Route6 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "mounted-dsl"
+  end
+end
+
+class Route7 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.headers["X-Listed"] = "1"
+  end
+end
+
+class Route8 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "a"
+  end
+end
+
+class Route9 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "b"
+  end
+end
+
+class Route10 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    halt env, status_code: 403, response: "Forbidden"
+    "unreachable"
+  end
+end
+
+class Route11 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    headers env, {"X-A" => "1", "X-B" => "2"}
+    "headed"
+  end
+end
+
+class Route12 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["order"]? || ""
+  end
+end
+
+class Route13 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["order"]? || ""
+  end
+end
+
+class Route14 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    name = env.params.url["name"]
+    rendered = render "fixtures/views/page.eiy"
+    body = ""
+    body << rendered
+    body
+  end
+end
+
+class Route15 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    name = env.params.url["name"]
+    rendered = render "fixtures/views/with_content_for.eiy",
+      "fixtures/views/layout_with_yield.eiy"
+    body = ""
+    body << rendered
+    body
+  end
+end
+
+class Route16 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.text("x" * 2000)
+  end
+end
+
 
 class Tag < Handler
   @label : String
@@ -27,200 +210,944 @@ class Tag < Handler
 end
 
 class Collected < Logger
-  property lines : Array(String)
+  @text : String::Builder
+  @rows : Array(Tuple(Int32, Int32))
 
-  def initialize
-    @lines = [] of String
+  def initialize(capacity : Int32)
+    @text = String::Builder.new(capacity)
+    @rows = [] of Tuple(Int32, Int32)
   end
 
   pub def write(message : String) : Nil
-    @lines << message
+    at = @text.bytesize
+    @text.append(message)
+    @rows << {at, message.bytesize}
+  end
+
+  def lines : Array(String)
+    @rows.map { |row| @text.finish[row[0], row[1]] }
   end
 end
 
-get "/dsl" do |env|
-  "from-dsl"
-end
-
-post "/dsl" do |env|
-  "posted-dsl"
-end
-
-before_all "/gated" do |env|
-  env.halt(401, "gated")
-  ""
-end
-
-get "/gated" do |env|
-  "open"
-end
-
-error 404 do |env|
-  "dsl-missing"
-end
-
-mounted = Router.new
-mounted.get "/in" do |env|
-  "mounted-dsl"
-end
-mount "/sub", mounted
-
-before_get ["/listed-a", "/listed-b"] do |env|
-  env.response.headers["X-Listed"] = "1"
-end
-
-get "/listed-a" do |env|
-  "a"
-end
-
-get "/listed-b" do |env|
-  "b"
-end
-
-get "/halted" do |env|
-  halt env, status_code: 403, response: "Forbidden"
-  "unreachable"
-end
-
-get "/headed" do |env|
-  headers env, {"X-A" => "1", "X-B" => "2"}
-  "headed"
-end
-
-get "/ordered" do |env|
-  env["order"]? || ""
-end
-
-get "/api/ordered" do |env|
-  env["order"]? || ""
-end
-
-get "/rendered/:name" do |env|
-  name = env.params.url["name"]
-  render "fixtures/views/page.eiy"
-end
-
-get "/laid-out/:name" do |env|
-  name = env.params.url["name"]
-  render "fixtures/views/with_content_for.eiy", "fixtures/views/layout_with_yield.eiy"
-end
-
-get "/big-text" do |env|
-  env.text("x" * 2000)
-end
-
-describe "web/dsl" do
-  it "registers GET and POST on the process app" do
-    handler = RouteHandler.new(app)
-    assert dispatch(handler, "GET", "/dsl").response.body == "from-dsl"
-    assert dispatch(handler, "POST", "/dsl").response.body == "posted-dsl"
+class ServedHeader < StaticHeadersHook
+  pub def call(context : Context, path : String, info : File::Info) : Nil
+    context.response.headers["X-Served"] = info.size.to_s
+    nil
   end
+end
 
-  it "registers error handlers" do
-    handler = RouteHandler.new(app)
-    assert dispatch(handler, "GET", "/nope").response.body == "dsl-missing"
+def dsl_example_1 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  route_options_1 = Config.new("web")
+  route_tree_1 = Tree(Int32).new
+  socket_tree_1 = Tree(Int32).new
+  route_handler_1 = RouteHandler.new(route_tree_1, socket_tree_1,
+    route_options_1)
+  route_handler_1.load(application.router)
+  handler = route_handler_1
+  dispatch(handler, "GET", "/dsl") do |made230|
+    assert made230.response.body == "from-dsl"
   end
+  dispatch(handler, "POST", "/dsl") do |made231|
+    assert made231.response.body == "posted-dsl"
+  end
+  nil
+end
 
-  it "registers before_all" do
-    handler = RouteHandler.new(app)
-    gated = dispatch(handler, "GET", "/gated")
+def dsl_example_2 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  route_options_2 = Config.new("web")
+  route_tree_2 = Tree(Int32).new
+  socket_tree_2 = Tree(Int32).new
+  route_handler_2 = RouteHandler.new(route_tree_2, socket_tree_2,
+    route_options_2)
+  route_handler_2.load(application.router)
+  handler = route_handler_2
+  dispatch(handler, "GET", "/nope") do |made232|
+    assert made232.response.body == "dsl-missing"
+  end
+  nil
+end
+
+def dsl_example_3 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  route_options_3 = Config.new("web")
+  route_tree_3 = Tree(Int32).new
+  socket_tree_3 = Tree(Int32).new
+  route_handler_3 = RouteHandler.new(route_tree_3, socket_tree_3,
+    route_options_3)
+  route_handler_3.load(application.router)
+  handler = route_handler_3
+  dispatch(handler, "GET", "/gated") do |gated|
     assert gated.response.status_code == 401
     assert gated.response.body == "gated"
   end
+  nil
+end
 
-  it "mounts a sub-router" do
-    handler = RouteHandler.new(app)
-    assert dispatch(handler, "GET", "/sub/in").response.body == "mounted-dsl"
+def dsl_example_4 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  route_options_4 = Config.new("web")
+  route_tree_4 = Tree(Int32).new
+  socket_tree_4 = Tree(Int32).new
+  route_handler_4 = RouteHandler.new(route_tree_4, socket_tree_4,
+    route_options_4)
+  route_handler_4.load(application.router)
+  handler = route_handler_4
+  dispatch(handler, "GET", "/sub/in") do |made234|
+    assert made234.response.body == "mounted-dsl"
   end
+  nil
+end
 
-  it "writes config through helpers" do
-    logging(false)
-    assert config.logging == false
-    serve_static(false)
-    assert config.serve_static == false
-    public_folder("./assets")
-    assert config.public_folder == "./assets"
+def dsl_example_5 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  application.logging(false)
+  assert config.logging == false
+  application.serve_static(false)
+  assert config.serve_static == false
+  application.public_folder("./assets")
+  assert config.public_folder == "./assets"
+  nil
+end
+
+def dsl_example_6 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  previous = config.logger
+  collected = Collected.new(256)
+  application.logger collected
+  application.logging(true)
+  application.serve_static(false)
+  with_handler_chain(application) do |current_handler|
+    dispatch(current_handler, "GET", "/dsl") do |made235|
+      nil
+    end
   end
+  application.log "custom message"
+  assert collected.lines.size == 2
+  assert collected.lines[0].starts_with?("GET /dsl 200 ")
+  assert collected.lines[1] == "custom message"
 
-  it "sends request lines and log messages to the configured logger until logging false" do
-    previous = config.logger
-    collected = Collected.new
-    logger collected
-    logging(true)
-    serve_static(false)
-    dispatch(handler_chain, "GET", "/dsl")
-    log "custom message"
-    assert collected.lines.size == 2
-    assert collected.lines[0].starts_with?("GET /dsl 200 ")
-    assert collected.lines[1] == "custom message"
-
-    logging(false)
-    dispatch(handler_chain, "GET", "/dsl")
-    log "dropped"
-    assert collected.lines.size == 2
-    logger previous
+  application.logging(false)
+  with_handler_chain(application) do |quiet_handler|
+    dispatch(quiet_handler, "GET", "/dsl") do |made236|
+      nil
+    end
   end
+  application.log "dropped"
+  assert collected.lines.size == 2
+  application.logger previous
+  nil
+end
 
-  it "registers one filter for a list of paths" do
-    handler = RouteHandler.new(app)
-    assert dispatch(handler, "GET", "/listed-a").response.headers["x-listed"]? == "1"
-    assert dispatch(handler, "GET", "/listed-b").response.headers["x-listed"]? == "1"
-    assert dispatch(handler, "GET", "/dsl").response.headers["x-listed"]?.nil?
+def dsl_example_7 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  route_options_5 = Config.new("web")
+  route_tree_5 = Tree(Int32).new
+  socket_tree_5 = Tree(Int32).new
+  route_handler_5 = RouteHandler.new(route_tree_5, socket_tree_5,
+    route_options_5)
+  route_handler_5.load(application.router)
+  handler = route_handler_5
+  dispatch(handler, "GET", "/listed-a") do |made237|
+    assert made237.response.headers["x-listed"]? == "1"
   end
+  dispatch(handler, "GET", "/listed-b") do |made238|
+    assert made238.response.headers["x-listed"]? == "1"
+  end
+  dispatch(handler, "GET", "/dsl") do |made239|
+    assert made239.response.headers["x-listed"]?.nil?
+  end
+  nil
+end
 
-  it "halts and sets headers with the helper functions" do
-    handler = RouteHandler.new(app)
-    halted = dispatch(handler, "GET", "/halted")
+def dsl_example_8 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  route_options_6 = Config.new("web")
+  route_tree_6 = Tree(Int32).new
+  socket_tree_6 = Tree(Int32).new
+  route_handler_6 = RouteHandler.new(route_tree_6, socket_tree_6,
+    route_options_6)
+  route_handler_6.load(application.router)
+  handler = route_handler_6
+  dispatch(handler, "GET", "/halted") do |halted|
     assert halted.response.status_code == 403
     assert halted.response.body == "Forbidden"
-    headed = dispatch(handler, "GET", "/headed")
-    assert headed.response.headers["x-a"] == "1"
-    assert headed.response.headers["x-b"] == "2"
+    dispatch(handler, "GET", "/headed") do |headed|
+      assert headed.response.headers["x-a"] == "1"
+      assert headed.response.headers["x-b"] == "2"
+    end
   end
+  nil
+end
 
-  it "places a positioned handler first and scopes a handler list to a path" do
-    logging(false)
-    serve_static(false)
-    use Tag.new("second")
-    use Tag.new("first"), 0
-    use "/api", [Tag.new("api-1"), Tag.new("api-2")]
-    whole = handler_chain
-    assert dispatch(whole, "GET", "/ordered").response.body == "first,second"
-    assert dispatch(whole, "GET", "/api/ordered").response.body == "first,second,api-1,api-2"
+def dsl_example_9 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  application.logging(false)
+  application.serve_static(false)
+  second = Tag.new("second")
+  application.use(second)
+  first = Tag.new("first")
+  application.use(first, 0)
+  api_first = Tag.new("api-1")
+  api_second = Tag.new("api-2")
+  scoped_first = PathHandler.new("/api", api_first)
+  scoped_second = PathHandler.new("/api", api_second)
+  application.use(scoped_first)
+  application.use(scoped_second)
+  with_handler_chain(application) do |whole|
+    dispatch(whole, "GET", "/ordered") do |made242|
+      assert made242.response.body == "first,second"
+    end
+    dispatch(whole, "GET", "/api/ordered") do |made243|
+      assert made243.response.body == "first,second,api-1,api-2"
+    end
   end
+  nil
+end
 
-  it "renders templates, with a layout and content_for, through the DSL" do
-    handler = RouteHandler.new(app)
-    assert dispatch(handler, "GET", "/rendered/ada").response.body == "Hello ada\n"
-    laid = dispatch(handler, "GET", "/laid-out/ada").response.body
+def dsl_example_10 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  route_options_7 = Config.new("web")
+  route_tree_7 = Tree(Int32).new
+  socket_tree_7 = Tree(Int32).new
+  route_handler_7 = RouteHandler.new(route_tree_7, socket_tree_7,
+    route_options_7)
+  route_handler_7.load(application.router)
+  handler = route_handler_7
+  dispatch(handler, "GET", "/rendered/ada") do |made244|
+    assert made244.response.body == "Hello ada\n"
+  end
+  dispatch(handler, "GET", "/laid-out/ada") do |made245|
+    laid = made245.response.body
     assert laid.includes?("<head><title>Page of ada</title>\n</head>")
     assert laid.includes?("<body>Hello ada\n</body>")
   end
+  nil
+end
 
-  it "compresses responses with gzip true" do
-    gzip true
-    request = http_request("GET", "/big-text")
+def dsl_example_11 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  application.gzip true
+  http_request("GET", "/big-text") do |request|
     request.headers["Accept-Encoding"] = "gzip"
-    packed = dispatch(handler_chain, request)
-    assert packed.response.headers["content-encoding"] == "gzip"
-    assert Gzip.decompress(packed.response.body) == "x" * 2000
-  end
-
-  it "takes static options as a hash and calls static_headers" do
-    serve_static({"dir_listing" => true, "gzip" => true})
-    assert config.serve_static
-    assert config.static_dir_listing
-    assert config.static_gzip
-    assert !config.static_dir_index
-    public_folder(__DIR__ + "/fixtures")
-    static_headers do |env, path, info|
-      env.response.headers["X-Served"] = info.size.to_s
+    with_handler_chain(application) do |current_handler|
+      dispatch(current_handler, request) do |packed|
+        assert packed.response.headers["content-encoding"] == "gzip"
+        assert Gzip.decompress(packed.response.body) == "x" * 2000
+      end
     end
-    served = dispatch(handler_chain, "GET", "/hello.txt")
-    assert served.response.body == "hello-static"
-    assert served.response.headers["x-served"] == "12"
-    listed = dispatch(handler_chain, "GET", "/")
-    assert listed.response.body.includes?("hello.txt")
-    serve_static(false)
   end
+  nil
+end
+
+def dsl_example_12 : Nil
+  config = Config.new("web")
+  router = Router.new("")
+  application = App.new(router, config)
+  route_action_1 = Route1.new
+  application.get("/dsl", route_action_1)
+
+  route_action_2 = Route2.new
+  application.post("/dsl", route_action_2)
+
+  route_action_3 = Route3.new
+  application.before_all("/gated", route_action_3)
+
+  route_action_4 = Route4.new
+  application.get("/gated", route_action_4)
+
+  route_action_5 = Route5.new
+  application.error(404, route_action_5)
+
+  mounted = Router.new("")
+  route_action_6 = Route6.new
+  mounted.get("/in", route_action_6)
+  application.mount "/sub", mounted
+
+  route_action_7 = Route7.new
+  application.before_get(["/listed-a", "/listed-b"], route_action_7)
+
+  route_action_8 = Route8.new
+  application.get("/listed-a", route_action_8)
+
+  route_action_9 = Route9.new
+  application.get("/listed-b", route_action_9)
+
+  route_action_10 = Route10.new
+  application.get("/halted", route_action_10)
+
+  route_action_11 = Route11.new
+  application.get("/headed", route_action_11)
+
+  route_action_12 = Route12.new
+  application.get("/ordered", route_action_12)
+
+  route_action_13 = Route13.new
+  application.get("/api/ordered", route_action_13)
+
+  route_action_14 = Route14.new
+  application.get("/rendered/:name", route_action_14)
+
+  route_action_15 = Route15.new
+  application.get("/laid-out/:name", route_action_15)
+
+  route_action_16 = Route16.new
+  application.get("/big-text", route_action_16)
+
+  application.serve_static({"dir_listing" => true, "gzip" => true})
+  assert config.serve_static
+  assert config.static_dir_listing
+  assert config.static_gzip
+  assert !config.static_dir_index
+  application.public_folder(__DIR__ + "/fixtures")
+  hook = ServedHeader.new
+  application.static_headers(hook)
+  with_handler_chain(application) do |current_handler|
+    dispatch(current_handler, "GET", "/hello.txt") do |served|
+      assert served.response.body == "hello-static"
+      assert served.response.headers["x-served"] == "12"
+      dispatch(current_handler, "GET", "/") do |listed|
+        assert listed.response.body.includes?("hello.txt")
+        application.serve_static(false)
+      end
+    end
+  end
+  nil
+end
+
+def run_suite : Nil
+  describe "web/dsl" do
+    it "registers GET and POST on the process app" do
+      dsl_example_1
+    end
+
+    it "registers error handlers" do
+      dsl_example_2
+    end
+
+    it "registers before_all" do
+      dsl_example_3
+    end
+
+    it "mounts a sub-router" do
+      dsl_example_4
+    end
+
+    it "writes config through helpers" do
+      dsl_example_5
+    end
+
+    it("sends request lines and log messages to the configured " +
+      "logger until logging false") do
+      dsl_example_6
+    end
+
+    it "registers one filter for a list of paths" do
+      dsl_example_7
+    end
+
+    it "halts and sets headers with the helper functions" do
+      dsl_example_8
+    end
+
+    it("places a positioned handler first and scopes a handler list " +
+      "to a path") do
+      dsl_example_9
+    end
+
+    it "renders templates, with a layout and content_for, through the DSL" do
+      dsl_example_10
+    end
+
+    it "compresses responses with gzip true" do
+      dsl_example_11
+    end
+
+    it "takes static options as a hash and calls static_headers" do
+      dsl_example_12
+    end
+  end
+end
+
+group do |g|
+  suite = g.spawn do
+    run_suite
+    0
+  end
+  result = suite.value
+  raise result.text if result.is_a?(Panicked)
+  0
 end

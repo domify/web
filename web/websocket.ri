@@ -19,13 +19,9 @@
 # answered with one carrying the same code, then the server closes the TCP
 # connection first, as §7.1.1 asks.
 #
-# `send`, `ping` and `close` may be called from any task: a broadcast from
-# one connection's task writes to the others. The runtime lets one task
-# read a socket while another writes it, but refuses a second writer while
-# one waits, and one that found room would split the other's frame, so
-# each socket lets one frame out at a time. A send to a
-# socket that has closed, or whose client has gone, answers false and
-# touches nothing else; the task that called it carries on.
+# The connection task owns this object and its socket. Callbacks run in
+# that task too. Other tasks must queue data for it, never call send,
+# ping or close on its socket. Whole frames leave in call order.
 module web/websocket
 
 import std/socket::{IyiSocket, SocketError}
@@ -33,7 +29,6 @@ import std/digest::{SHA1}
 import std/base64::{Base64}
 import std/unicode::{Unicode}
 import std/uri::{URI}
-import web/context::{Context}
 import web/request::{Request}
 
 # RFC 6455 §1.3: appended to the client's key before hashing.
@@ -45,6 +40,7 @@ CLOSE_WAIT_MS = 5000
 
 # One frame off the wire, its payload unmasked. *size* is how many bytes
 # it took, header included.
+@[OnTape]
 pub struct Frame
   getter fin : Bool
   getter opcode : Int32
@@ -57,6 +53,7 @@ end
 
 # Why a frame was refused: the close code the RFC gives the violation and
 # a reason for the close frame.
+@[OnTape]
 pub struct FrameError
   getter code : Int32
   getter reason : String
@@ -66,6 +63,7 @@ pub struct FrameError
 end
 
 pub class WebSocket
+  IDLE         = -1
   CONTINUATION = 0x0
   TEXT         = 0x1
   BINARY       = 0x2
@@ -75,15 +73,17 @@ pub class WebSocket
 
   @socket : IyiSocket
   @max_message_size : Int32
-  @buffer : String
+  # What has arrived and not been consumed; emptied whenever every byte is.
+  @buffer : String::Builder
   @offset : Int32
-  @lock : Channel(Int32)
   @close_sent : Bool
   @gone : Bool
   @finished : Bool
   @fragment_opcode : Int32
-  @fragments : Array(String)
+  @fragments : String::Builder
   @fragment_size : Int32
+  @close_code : Int32
+  @close_reason : String::Builder
   @on_message : Proc(String, Nil)?
   @on_binary : Proc(String, Nil)?
   @on_ping : Proc(String, Nil)?
@@ -92,22 +92,29 @@ pub class WebSocket
 
   # *socket* is a connection whose handshake is already done.
   def initialize(@socket : IyiSocket, @max_message_size : Int32 = 8 * 1024 * 1024)
-    @buffer = ""
+    @buffer = String::Builder.new(65536)
     @offset = 0
-    # The write lock: one token, taken to write a frame and put back after.
-    @lock = Channel(Int32).new(1)
-    @lock.put_now(0)
     @close_sent = false
     @gone = false
     @finished = false
     @fragment_opcode = 0
-    @fragments = [] of String
+    @fragments = String::Builder.new(256)
     @fragment_size = 0
+    @close_code = 1006
+    @close_reason = String::Builder.new
     @on_message = nil
     @on_binary = nil
     @on_ping = nil
     @on_pong = nil
     @on_close = nil
+  end
+
+  pub def close_code : Int32
+    @close_code
+  end
+
+  pub def close_reason : String
+    @close_reason.finish
   end
 
   # A text message, fragments put together.
@@ -187,21 +194,109 @@ pub class WebSocket
   # Runs the session: yields the socket for its callbacks, then reads
   # frames until the close handshake is over or the client has gone.
   # *leftover* is what the client sent after the handshake, read with it.
-  # The block and the callbacks run in a task of their own, so one that
-  # panics ends the session with 1011 rather than dropping the connection
-  # without a word.
-  pub def run(leftover : String = "", &setup : WebSocket -> Nil) : Nil
-    @buffer = leftover
+  # A block or callback that panics ends the session with 1011 as its task
+  # unwinds, rather than dropping the connection without a word.
+  pub def run(leftover : String = "", & : WebSocket -> Nil) : Nil
+    @buffer.append(leftover)
     @offset = 0
-    outcome = group do |g|
-      task = g.spawn do
-        setup.call(self)
-        read_frames
-        0
-      end
-      task.value
+    defer fail(1011, "")
+    yield self
+    read_frames
+  end
+
+  # A polling owner may use a short socket wait to service its inbox.
+  pub def poll_interval_ms=(milliseconds : Int32) : Nil
+    @socket.read_timeout_ms = milliseconds
+  end
+
+  # Scoped callbacks run synchronously before reading the next event.
+  pub def run_events(leftover : String = "",
+                     & : Int32, String -> Nil) : Nil
+    @buffer.append(leftover)
+    @offset = 0
+    defer fail_event(1011, "")
+    payload = String::Builder.new
+    while opcode = read_event(payload)
+      yield opcode, payload.finish
     end
-    fail(1011, "") if outcome.is_a?(Panicked)
+  end
+
+  # Pull one event in the connection task. Payload bytes belong to the
+  # caller's reusable buffer; finish using them before the next read.
+  # Ping is yielded after its pong, close after the socket is closed.
+  # This form borrows application state without storing escaping procs.
+  pub def read_event(payload : String::Builder) : Int32?
+    payload.clear
+    until @finished
+      case frame = WebSocket.decode_frame(@buffer.finish, @offset,
+        true, @max_message_size, payload)
+      in FrameError
+        fail_event(frame.code, frame.reason)
+      in Int32
+        missing = fill_event(frame)
+        if missing
+          return IDLE if missing.code == 0
+          fail_event(missing.code, missing.reason)
+        end
+      in Frame
+        @offset += frame.size
+        opcode = frame.opcode
+        if opcode == TEXT || opcode == BINARY
+          if @fragment_opcode != 0
+            fail_event(1002, "expected a continuation frame")
+          elsif frame.fin
+            compact
+            if opcode == TEXT && !Unicode.valid?(payload.finish)
+              fail_event(1007, "text is not UTF-8")
+            else
+              return opcode
+            end
+          else
+            @fragment_opcode = opcode
+            @fragments.clear
+            @fragments.append(payload.finish)
+            @fragment_size = payload.bytesize
+          end
+        elsif opcode == CONTINUATION
+          if @fragment_opcode == 0
+            fail_event(1002, "continuation frame without a message")
+          else
+            @fragment_size += payload.bytesize
+            if @fragment_size > @max_message_size
+              fail_event(1009, "message too big")
+            else
+              @fragments.append(payload.finish)
+              if frame.fin
+                kind = @fragment_opcode
+                @fragment_opcode = 0
+                @fragment_size = 0
+                payload.clear
+                payload.append(@fragments.finish)
+                compact
+                if kind == TEXT && !Unicode.valid?(payload.finish)
+                  fail_event(1007, "text is not UTF-8")
+                else
+                  return kind
+                end
+              end
+            end
+          end
+        elsif opcode == CLOSE
+          closing_event(payload.finish)
+          return CLOSE
+        elsif opcode == PING
+          transmit(PONG, payload.finish)
+          compact
+          return PING
+        else
+          compact
+          return PONG
+        end
+        compact
+      end
+      payload.clear
+    end
+    nil
   end
 
   # --- The handshake ---
@@ -210,10 +305,9 @@ pub class WebSocket
   # the GUID.
   def self.accept_key(key : String) : String
     digest = SHA1.hash_bytes(key + HANDSHAKE_GUID)
-    raw = String.build(digest.size) do |io|
-      digest.each { |byte| io.write_byte(byte) }
-    end
-    Base64.encode(raw)
+    raw = String::Builder.new(digest.size + 1)
+    digest.each { |byte| raw.write_byte(byte) }
+    Base64.encode(raw.finish)
   end
 
   # Whether *request* asks to become a WebSocket: `Upgrade` names it. The
@@ -233,19 +327,6 @@ pub class WebSocket
     return 426 unless (request.headers["Sec-WebSocket-Version"]? || "").strip == "13"
     return 400 unless valid_key?((request.headers["Sec-WebSocket-Key"]? || "").strip)
     nil
-  end
-
-  # Answers an accepted handshake with 101 and hands the connection to
-  # *handler* once the server has sent it. Call `refusal` first.
-  def self.accept(ctx : Context, max_message_size : Int32, handler : Proc(WebSocket, Context, Nil)) : Nil
-    response = ctx.response
-    response.status_code = 101
-    response.headers["Upgrade"] = "websocket"
-    response.headers["Connection"] = "Upgrade"
-    response.headers["Sec-WebSocket-Accept"] = accept_key(ctx.request.headers["Sec-WebSocket-Key"].strip)
-    response.upgrade do |socket, leftover|
-      WebSocket.new(socket, max_message_size).run(leftover) { |ws| handler.call(ws, ctx) }
-    end
   end
 
   # `"*"` admits every request, one without `Origin` too. Otherwise the
@@ -336,10 +417,13 @@ pub class WebSocket
   # bytes there so far tell. *require_mask* is the server's side: a client
   # frame must be masked. A data frame's payload over *max_payload* is
   # refused from its header, before any of it is read.
-  def self.decode_frame(buffer : String, from : Int32, require_mask : Bool, max_payload : Int32) : Frame | FrameError | Int32
+  # Decode into caller storage so a masked payload never escapes scratch.
+  def self.decode_frame(buffer : String, from : Int32,
+                        require_mask : Bool, max_payload : Int32,
+                        plain : String::Builder) : Frame | FrameError | Int32
     have = buffer.bytesize - from
     return 2 if have < 2
-    bytes = buffer.as_tape[from, have]
+    bytes = buffer[from, have]
     first = bytes[0].to_i32
     second = bytes[1].to_i32
     fin = (first & 0x80) != 0
@@ -379,29 +463,27 @@ pub class WebSocket
     size = length.to_i32
     body_at = header + (masked ? 4 : 0)
     return body_at + size if have < body_at + size
-    payload = if masked
-                String.build(size) do |io|
-                  index = 0
-                  while index < size
-                    io.write_byte(bytes[body_at + index] ^ bytes[header + (index & 3)])
-                    index = index + 1
-                  end
-                end
-              else
-                buffer[from + body_at, size]
-              end
-    Frame.new(fin, opcode, payload, body_at + size)
+    unless masked
+      plain.append(buffer[from + body_at, size])
+      return Frame.new(fin, opcode, plain.finish, body_at + size)
+    end
+    index = 0
+    while index < size
+      plain.write_byte(bytes[body_at + index] ^ bytes[header + (index & 3)])
+      index = index + 1
+    end
+    Frame.new(fin, opcode, plain.finish, body_at + size)
   end
 
   # A close frame's payload: the code, two bytes big-endian, then the
   # reason; 1005 means "no code" and is sent as an empty payload.
   def self.close_payload(code : Int32, reason : String) : String
     return "" if code == 1005
-    prefix = String.build(2) do |io|
-      io.write_byte(((code >> 8) & 255).to_u8)
-      io.write_byte((code & 255).to_u8)
-    end
-    prefix + reason
+    payload = String::Builder.new(2 + reason.bytesize)
+    payload.write_byte(((code >> 8) & 255).to_u8)
+    payload.write_byte((code & 255).to_u8)
+    payload.append(reason)
+    payload.finish
   end
 
   # The codes a close frame may carry (§7.4): the ones the RFC and the
@@ -417,53 +499,73 @@ pub class WebSocket
 
   private def read_frames : Nil
     until @finished
-      case frame = next_frame
+      needed = 0
+      # A frame's payload lives for this round; a client's is unmasked here.
+      plain = String::Builder.new
+      case frame = WebSocket.decode_frame(@buffer.finish, @offset,
+        true, @max_message_size, plain)
       in Frame
+        @offset = @offset + frame.size
         receive(frame)
+        compact
       in FrameError
         fail(frame.code, frame.reason)
-      end
-    end
-  end
-
-  # The next whole frame, reading as much as it takes. A connection that
-  # ends first answers 1006.
-  private def next_frame : Frame | FrameError
-    loop do
-      case decoded = WebSocket.decode_frame(@buffer, @offset, true, @max_message_size)
-      in Frame
-        @offset = @offset + decoded.size
-        return decoded
-      in FrameError
-        return decoded
       in Int32
-        missing = fill(decoded)
-        return missing if missing
+        needed = frame
+      end
+      if needed > 0
+        missing = fill(needed)
+        fail(missing.code, missing.reason) if missing
       end
     end
   end
 
-  # Reads until *needed* bytes follow the offset. The pieces are joined
-  # once, so a large frame arriving in many reads is copied once.
+  # Empty the buffer when consumed. With a partial following frame,
+  # compact only after a read's worth has been consumed, keeping copying
+  # amortized and preventing a streaming peer retaining the whole session.
+  private def compact : Nil
+    if @offset == @buffer.bytesize
+      @buffer.clear
+      @offset = 0
+    elsif @offset >= 65536
+      rest = String::Builder.new
+      rest.append(@buffer.finish[@offset, @buffer.bytesize - @offset])
+      @buffer.clear
+      @buffer.append(rest.finish)
+      @offset = 0
+    end
+  end
+
+  # Reads until *needed* bytes follow the offset, onto the buffer's end.
   private def fill(needed : Int32) : FrameError?
-    pending = @buffer[@offset, @buffer.bytesize - @offset]
-    parts = [pending]
-    have = pending.bytesize
-    while have < needed
+    while @buffer.bytesize - @offset < needed
       # The server closes the socket of a connection it gives up on; a
       # read of a closed socket panics rather than answering.
       return FrameError.new(1006, "") if @socket.closed?
-      case chunk = @socket.read(65536)
+      case got = @socket.read(@buffer, 65536)
       in Cancelled, SocketError
         return FrameError.new(1006, "")
-      in String
-        return FrameError.new(1006, "") if chunk.empty?
-        parts << chunk
-        have = have + chunk.bytesize
+      in Int32
+        return FrameError.new(1006, "") if got == 0
       end
     end
-    @buffer = parts.size == 1 ? pending : parts.join
-    @offset = 0
+    nil
+  end
+
+  # Timeout preserves partial headers and payload for the next poll.
+  private def fill_event(needed : Int32) : FrameError?
+    while @buffer.bytesize - @offset < needed
+      return FrameError.new(1006, "") if @socket.closed?
+      case got = @socket.read(@buffer, 65536)
+      in Cancelled
+        return FrameError.new(1006, "")
+      in SocketError
+        idle = got.timed_out? && !@close_sent
+        return FrameError.new(idle ? 0 : 1006, "")
+      in Int32
+        return FrameError.new(1006, "") if got == 0
+      end
+    end
     nil
   end
 
@@ -471,22 +573,24 @@ pub class WebSocket
     opcode = frame.opcode
     if opcode == TEXT || opcode == BINARY
       return fail(1002, "expected a continuation frame") unless @fragment_opcode == 0
-      return deliver(opcode, frame.payload) if frame.fin
+      if frame.fin
+        deliver(opcode, frame.payload)
+        return
+      end
       @fragment_opcode = opcode
-      @fragments = [frame.payload]
+      @fragments.clear
+      @fragments.append(frame.payload)
       @fragment_size = frame.payload.bytesize
     elsif opcode == CONTINUATION
       return fail(1002, "continuation frame without a message") if @fragment_opcode == 0
       @fragment_size = @fragment_size + frame.payload.bytesize
       return fail(1009, "message too big") if @fragment_size > @max_message_size
-      @fragments << frame.payload
+      @fragments.append(frame.payload)
       return unless frame.fin
-      whole = @fragments.join
       kind = @fragment_opcode
       @fragment_opcode = 0
-      @fragments = [] of String
       @fragment_size = 0
-      deliver(kind, whole)
+      deliver(kind, @fragments.finish)
     elsif opcode == CLOSE
       closing(frame.payload)
     elsif opcode == PING
@@ -530,6 +634,41 @@ pub class WebSocket
     finish(code, reason)
   end
 
+  private def closing_event(payload : String) : Nil
+    if payload.bytesize == 1
+      return fail_event(1002, "close frame with a one-byte payload")
+    end
+    code = 1005
+    reason = ""
+    if payload.bytesize >= 2
+      code = (payload.byte_at(0).to_i32 << 8) | payload.byte_at(1).to_i32
+      unless WebSocket.valid_close_code?(code)
+        return fail_event(1002, "invalid close code")
+      end
+      reason = payload[2, payload.bytesize - 2]
+      unless Unicode.valid?(reason)
+        return fail_event(1007, "close reason is not UTF-8")
+      end
+    end
+    send_close(code, "")
+    finish_event(code, reason)
+  end
+
+  # 1006 is never sent: it stands for a connection that has already gone.
+  private def fail_event(code : Int32, reason : String) : Nil
+    send_close(code, reason) unless code == 1006
+    finish_event(code, reason)
+  end
+
+  private def finish_event(code : Int32, reason : String) : Nil
+    return if @finished
+    @finished = true
+    @close_code = code
+    @close_reason.append(reason)
+    @close_sent = true
+    @socket.close
+  end
+
   # 1006 is never sent: it stands for a connection that has already gone.
   private def fail(code : Int32, reason : String) : Nil
     send_close(code, reason) unless code == 1006
@@ -539,6 +678,8 @@ pub class WebSocket
   private def finish(code : Int32, reason : String) : Nil
     return if @finished
     @finished = true
+    @close_code = code
+    @close_reason.append(reason)
     @close_sent = true
     @socket.close
     if callback = @on_close
@@ -557,11 +698,10 @@ pub class WebSocket
     write_frame(WebSocket.encode_frame(opcode, payload))
   end
 
-  # One frame at a time, whichever task is writing. A write that fails
+  # Only the owning task writes. A write that fails
   # marks the client gone, so later sends answer false at once.
   private def write_frame(frame : String) : Bool
     return false if @gone
-    return false unless @lock.receive.is_a?(Int32)
     written = false
     unless @gone || @socket.closed?
       case @socket.write(frame)
@@ -571,10 +711,6 @@ pub class WebSocket
         @gone = true
       end
     end
-    # `send` refuses a task that is being cancelled, and the token would
-    # be lost with it; `put_now` cannot refuse, and the channel has room
-    # for the one token there is.
-    @lock.put_now(0)
     written
   end
 
@@ -586,7 +722,7 @@ pub class WebSocket
   # Sixteen bytes in base64 are 22 characters and `==`.
   private def self.valid_key?(key : String) : Bool
     return false unless key.bytesize == 24 && key.ends_with?("==")
-    bytes = key.as_tape
+    bytes = key
     index = 0
     while index < 22
       byte = bytes[index]

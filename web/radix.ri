@@ -12,151 +12,209 @@
 # without this module knowing what a handler is.
 module web/radix
 
-pub class Match(T)
-  def initialize(@payload : T, @params : Hash(String, String))
-  end
+private struct TextSpan
+  getter start : Int32
+  getter size : Int32
 
-  pub def payload : T
-    @payload
-  end
-
-  pub def params : Hash(String, String)
-    @params
-  end
-
-  pub def found? : Bool
-    true
+  def initialize(@start : Int32, @size : Int32)
   end
 end
 
-pub class Tree(T)
-  @root : Node(T)
+# A node's place in the tree. Children are a sibling list of indices;
+# -1 is none. *segment* views the tree's own text.
+private struct Node
+  property segment : TextSpan
+  property next_sibling : Int32
+  property first_static : Int32
+  property param : Int32
+  property catch_all : Int32
+  property payload : Int32
+  property names_from : Int32
+  property names_count : Int32
+
+  def initialize(@segment : TextSpan)
+    @next_sibling = -1
+    @first_static = -1
+    @param = -1
+    @catch_all = -1
+    @payload = -1
+    @names_from = 0
+    @names_count = 0
+  end
+end
+
+# The nodes live in one array and refer to each other by index, so the tree
+# holds no class instance; names and segments are kept in its own text.
+@[OnTape]
+pub struct Tree(T)
+  @nodes : Array(Node)
+  @payloads : Array(T)
+  @names : Array(TextSpan)
+  @text : String::Builder
 
   def initialize
-    @root = Node(T).new
+    nodes = Array(Node).new(32)
+    nodes << Node.new(TextSpan.new(0, 0))
+    @nodes = nodes
+    @payloads = Array(T).new(16)
+    @names = Array(TextSpan).new(16)
+    @text = String::Builder.new(256)
   end
 
-  pub def find(path : String) : Match(T)?
-    values = [] of String
-    node = walk(@root, split_segments(path), 0, values)
-    return nil unless node
-    payload = node.payload
-    return nil unless payload
-    params = {} of String => String
-    names = node.names
+  # The payload at *path*, under the top-level segment *within* when one is
+  # given; *params* gets each dynamic segment by name, its value a view of
+  # *path*. Nil when nothing matches.
+  pub def find(path : String, params : Hash(String, String), within : String = "") : T?
+    start = 0
+    unless within.empty?
+      start = static_child(0, within)
+      return nil if start < 0
+    end
+    values = Array(String).new(8)
+    from, stop = bounds(path)
+    at = walk(start, path, from, stop, values)
+    return nil if at < 0
+    node = @nodes[at]
     index = 0
-    while index < names.size
-      params[names[index]] = values[index]
+    while index < node.names_count
+      params[text_at(@names[node.names_from + index])] = values[index]
       index = index + 1
     end
-    Match(T).new(payload, params)
+    @payloads[node.payload]
   end
 
   # False, and nothing changed, when *path* already has a payload.
   pub def add(path : String, payload : T) : Bool
-    node = @root
-    names = [] of String
-    split_segments(path).each do |segment|
+    at = 0
+    names_from = @names.size
+    from, stop = bounds(path)
+    while from < stop
+      upto = segment_end(path, from, stop)
+      segment = path[from, upto - from]
       if segment.starts_with?('*') || segment.starts_with?(':')
-        names << segment[1, segment.bytesize - 1]
+        @names << keep(segment[1, segment.bytesize - 1])
       end
-      node = node.child_for(segment)
+      at = child_for(at, segment)
+      from = upto + 1
     end
-    return false if node.payload
-    node.payload = payload
-    node.names = names
+    if @nodes[at].payload >= 0
+      while @names.size > names_from
+        @names.pop
+      end
+      return false
+    end
+    node = @nodes[at]
+    node.payload = @payloads.size
+    node.names_from = names_from
+    node.names_count = @names.size - names_from
+    @nodes[at] = node
+    @payloads << payload
     true
   end
 
+  private def keep(text : String) : TextSpan
+    at = @text.bytesize
+    @text.append(text)
+    TextSpan.new(at, text.bytesize)
+  end
+
+  private def text_at(span : TextSpan) : String
+    @text.finish[span.start, span.size]
+  end
+
+  # Where the segments of *path* begin and end: without its leading and
+  # trailing slash. Empty when begin equals end.
+  private def bounds(path : String) : Tuple(Int32, Int32)
+    from = path.bytesize > 0 && path[0] == 47_u8 ? 1 : 0
+    stop = path.bytesize
+    stop = stop - 1 if stop > from && path[stop - 1] == 47_u8
+    {from, stop}
+  end
+
+  private def segment_end(path : String, from : Int32, stop : Int32) : Int32
+    i = from
+    while i < stop && path[i] != 47_u8
+      i = i + 1
+    end
+    i
+  end
+
+  private def child_for(at : Int32, segment : String) : Int32
+    node = @nodes[at]
+    if segment.starts_with?('*')
+      return node.catch_all if node.catch_all >= 0
+      made = fresh("")
+      node = @nodes[at]
+      node.catch_all = made
+      @nodes[at] = node
+      made
+    elsif segment.starts_with?(':')
+      return node.param if node.param >= 0
+      made = fresh("")
+      node = @nodes[at]
+      node.param = made
+      @nodes[at] = node
+      made
+    else
+      child = static_child(at, segment)
+      return child if child >= 0
+      made = fresh(segment)
+      node = @nodes[at]
+      fresh_node = @nodes[made]
+      fresh_node.next_sibling = node.first_static
+      @nodes[made] = fresh_node
+      node.first_static = made
+      @nodes[at] = node
+      made
+    end
+  end
+
+  private def fresh(segment : String) : Int32
+    @nodes << Node.new(keep(segment))
+    @nodes.size - 1
+  end
+
+  private def static_child(at : Int32, segment : String) : Int32
+    child = @nodes[at].first_static
+    while child >= 0
+      return child if text_at(@nodes[child].segment) == segment
+      child = @nodes[child].next_sibling
+    end
+    -1
+  end
+
   # *values* collects one string per dynamic segment, in path order; a
-  # dead end takes back what it pushed.
-  private def walk(node : Node(T), segments : Array(String), index : Int32, values : Array(String)) : Node(T)?
-    if index == segments.size
-      return node if node.payload
-      if glob = node.catch_all
-        if glob.payload
-          values << ""
-          return glob
-        end
-      end
-      return nil
-    end
-
-    segment = segments[index]
-
-    if child = node.static[segment]?
-      found = walk(child, segments, index + 1, values)
-      return found if found
-    end
-
-    if child = node.param
-      values << segment
-      found = walk(child, segments, index + 1, values)
-      return found if found
-      values.pop
-    end
-
-    if glob = node.catch_all
-      if glob.payload
-        rest = [] of String
-        rest_index = index
-        while rest_index < segments.size
-          rest << segments[rest_index]
-          rest_index = rest_index + 1
-        end
-        values << rest.join("/")
+  # dead end takes back what it pushed. The index of the node found, or -1.
+  private def walk(at : Int32, path : String, from : Int32, stop : Int32, values : Array(String)) : Int32
+    node = @nodes[at]
+    if from >= stop
+      return at if node.payload >= 0
+      glob = node.catch_all
+      if glob >= 0 && @nodes[glob].payload >= 0
+        values << ""
         return glob
       end
+      return -1
     end
 
-    nil
-  end
-
-  private def split_segments(path : String) : Array(String)
-    trimmed = path.starts_with?('/') ? path.lchop('/') : path
-    trimmed = trimmed.chomp('/')
-    return [] of String if trimmed.empty?
-    trimmed.split('/')
-  end
-end
-
-private class Node(T)
-  getter static : Hash(String, Node(T))
-  property param : Node(T)?
-  property catch_all : Node(T)?
-  property payload : T?
-  property names : Array(String)
-
-  def initialize
-    @static = {} of String => Node(T)
-    @param = nil
-    @catch_all = nil
-    @payload = nil
-    @names = [] of String
-  end
-
-  def child_for(segment : String) : Node(T)
-    if segment.starts_with?('*')
-      child = @catch_all
-      unless child
-        child = Node(T).new
-        @catch_all = child
-      end
-      child
-    elsif segment.starts_with?(':')
-      child = @param
-      unless child
-        child = Node(T).new
-        @param = child
-      end
-      child
-    else
-      child = @static[segment]?
-      unless child
-        child = Node(T).new
-        @static[segment] = child
-      end
-      child
+    upto = segment_end(path, from, stop)
+    segment = path[from, upto - from]
+    child = static_child(at, segment)
+    if child >= 0
+      found = walk(child, path, upto + 1, stop, values)
+      return found if found >= 0
     end
+    if node.param >= 0
+      values << segment
+      found = walk(node.param, path, upto + 1, stop, values)
+      return found if found >= 0
+      values.pop
+    end
+    glob = node.catch_all
+    if glob >= 0 && @nodes[glob].payload >= 0
+      values << path[from, stop - from]
+      return glob
+    end
+    -1
   end
 end

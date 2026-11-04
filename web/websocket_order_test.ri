@@ -1,0 +1,83 @@
+# The socket and every callback belong to the serving task. Assert the
+# complete wire, including pong placement and a close between messages.
+module web/websocket_order_test
+
+import std/socket::{IyiSocket}
+import web/websocket::{WebSocket}
+
+struct Ready
+  getter port : Int32
+  def initialize(@port : Int32)
+  end
+end
+
+MASK = "\x37\xfa\x21\x3d"
+
+group do |g|
+  server = g.spawn do
+    listener = IyiSocket.listen("127.0.0.1", 0)
+    defer listener.close
+    ready = Ready.new(listener.local_port)
+    raise "ready queue full" unless RisBoard.post(ready)
+    socket = listener.accept.or_panic
+    defer socket.close
+    ws = WebSocket.new(socket)
+    ws.poll_interval_ms = 10
+    idle = 0
+    ws.run_events do |opcode, text|
+      if opcode == WebSocket::TEXT
+        if text == "close"
+          ws.send("before close")
+          ws.close(1000, "done")
+          raise "sent after close" if ws.send("after close")
+        elsif !ws.closed?
+          ws.send("first:" + text)
+          ws.send("second:" + text)
+        end
+      elsif opcode == WebSocket::IDLE
+        idle += 1
+      elsif opcode == WebSocket::PING
+        ws.send("ping:" + text)
+      end
+    end
+    idle
+  end
+  ready = RisBoard.take(Ready).or_panic
+  client = IyiSocket.connect("127.0.0.1", ready.port).or_panic
+  defer client.close
+  client.read_timeout_ms = 2000
+  large = "x" * 70000
+  input = ""
+  input << WebSocket.encode_frame(WebSocket::TEXT, "one", true, MASK)
+  input << WebSocket.encode_frame(WebSocket::PING, "probe", true, MASK)
+  input << WebSocket.encode_frame(WebSocket::TEXT, large, true, MASK)
+  input << WebSocket.encode_frame(WebSocket::TEXT, "close", true, MASK)
+  input << WebSocket.encode_frame(WebSocket::TEXT, "ignored", true, MASK)
+  input << WebSocket.encode_frame(WebSocket::CLOSE,
+    WebSocket.close_payload(1000, ""), true, MASK)
+  sleep(25)
+  client.write(input[0, 3]).or_panic
+  sleep(25)
+  client.write(input[3, input.bytesize - 3]).or_panic
+  expected = ""
+  expected << WebSocket.encode_frame(WebSocket::TEXT, "first:one")
+  expected << WebSocket.encode_frame(WebSocket::TEXT, "second:one")
+  expected << WebSocket.encode_frame(WebSocket::PONG, "probe")
+  expected << WebSocket.encode_frame(WebSocket::TEXT, "ping:probe")
+  expected << WebSocket.encode_frame(WebSocket::TEXT, "first:" + large)
+  expected << WebSocket.encode_frame(WebSocket::TEXT, "second:" + large)
+  expected << WebSocket.encode_frame(WebSocket::TEXT, "before close")
+  expected << WebSocket.encode_frame(WebSocket::CLOSE,
+    WebSocket.close_payload(1000, "done"))
+  output = String::Builder.new
+  loop do
+    count = client.read(output, 65536).or_panic
+    break if count == 0
+  end
+  unless output.finish == expected
+    raise "frames were lost, split or reordered"
+  end
+  result = server.value
+  raise "idle polling did not run" unless result.is_a?(Int32) && result >= 2
+end
+puts "websocket owner frame order passed"

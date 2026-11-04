@@ -1,0 +1,39 @@
+# Receiver takeover reads request data and writes on the calling task's
+# socket, including bytes that followed the HTTP request.
+module web/upgrade_owner_test
+
+import std/socket::{IyiSocket}
+import web/response::{Upgrade, Response}
+import web/request::{Request}
+import web/headers::{Headers}
+
+class Endpoint < Upgrade
+  pub def call(socket : IyiSocket, leftover : String,
+               request : Request) : Nil
+    cookie = request.headers["Cookie"]? || ""
+    socket.write("#{cookie}:#{leftover}").or_panic
+  end
+end
+
+endpoint = Endpoint.new
+listener = IyiSocket.listen("127.0.0.1", 0)
+defer listener.close
+client = IyiSocket.connect("127.0.0.1", listener.local_port).or_panic
+defer client.close
+socket = listener.accept.or_panic
+defer socket.close
+headers = Headers.new
+headers["Cookie"] = "token"
+request = Request.new("GET", "/cable", "", "HTTP/1.1", headers, "")
+response_headers = Headers.new
+response = Response.new(response_headers)
+response.upgrade(endpoint)
+assert !response.upgrade_handler.nil?
+response.take_over(socket, "early", request)
+received = String::Builder.new
+while received.bytesize < 11
+  bytes = client.read(11 - received.bytesize).or_panic
+  raise "early close" if bytes.empty?
+  received.append(bytes)
+end
+assert received.finish == "token:early"

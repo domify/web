@@ -14,11 +14,6 @@
 # A HEAD gets the same `Content-Length` and no body, and the file is not
 # opened.
 #
-# A whole small file is kept in memory once read, as the assets a page
-# links to are asked for again and again: the next answer costs a `stat`,
-# not an open, a zeroed chunk and a read. The copy is used while the
-# file's size and modification time (in seconds) are what they were.
-#
 # The length is the file's size when it was looked at. A file removed
 # before it is opened, or cut short while it is read, cannot keep that
 # promise, so the send panics: before anything was flushed that is a 500,
@@ -28,24 +23,42 @@
 module web/file_body
 
 import std/file::{File}
-import std/mutex::{Mutex}
 import web/response::{Response}
 import web/range::*
 
 # The most bytes read from a file, and written to the connection, at once.
 pub FILE_CHUNK_SIZE = 65536
 
-# The most small files kept in memory; past it the cache starts over.
-FILE_CACHE_ENTRIES = 1024
+# One bounded entry owned by a task's file handler. File::Info exposes
+# seconds, so validate bytes too: same-size writes within a second must
+# never reuse stale content. Returned views are consumed before refill.
+pub class FileCache
+  def initialize
+    @path = String::Builder.new
+    @body = String::Builder.new(FILE_CHUNK_SIZE)
+  end
 
-# Small whole files by path: modification time, size and contents.
-FILE_CACHE = Mutex.new { {} of String => Tuple(Int64, Int64, String) }
+  pub def read(path : String) : String?
+    file = File.open(path, "r", FILE_CHUNK_SIZE)
+    defer file.close
+    fresh = file.read_bytes(FILE_CHUNK_SIZE + 1)
+    return nil if fresh.bytesize > FILE_CHUNK_SIZE
+    if @path.finish == path && @body.finish == fresh
+      return @body.finish
+    end
+    @path.clear
+    @path.append(path)
+    @body.clear
+    @body.append(fresh)
+    @body.finish
+  end
+end
 
 # Answers *ranges* (what `parse_ranges` made of the request's `Range`
 # header, or nil) for the file at *path*, of *size* bytes and media type
 # *content_type*: 206 with the requested bytes, 416, or the whole file.
 # The status of a whole-file answer is left as the caller set it.
-pub def respond_file(response : Response, path : String, size : Int64, ranges : Array(Tuple(Int64, Int64)) | Unsatisfiable | Nil, content_type : String, head : Bool) : Nil
+pub def respond_file(response : Response, path : String, size : Int64, ranges : Array(Tuple(Int64, Int64)) | Unsatisfiable | Nil, content_type : String, head : Bool, cache : FileCache? = nil) : Nil
   case ranges
   in Unsatisfiable
     response.status_code = 416
@@ -60,31 +73,75 @@ pub def respond_file(response : Response, path : String, size : Int64, ranges : 
       response.content_type = content_type
       response.headers["Content-Range"] = content_range(first, last, size)
       spans << {"", first, last - first + 1_i64}
-      send_spans(response, path, spans, "", head)
+      send_spans(response, path, spans, "", head, cache)
     else
       boundary = byteranges_boundary
       response.content_type = "multipart/byteranges; boundary=" + boundary
-      # Each part after the first opens with the CRLF that ends the one
-      # before it, and so does the closing delimiter.
-      index = 0
-      while index < it.size
-        first = it[index][0]
-        last = it[index][1]
-        separator = index == 0 ? "" : "\r\n"
-        spans << {separator + byteranges_part_head(first, last, size, content_type, boundary), first, last - first + 1_i64}
-        index = index + 1
-      end
-      send_spans(response, path, spans, "\r\n" + byteranges_tail(boundary), head)
+      send_ranges(response, path, it, size, content_type, boundary, head, cache)
     end
   in Nil
     response.content_type = content_type
-    send_spans(response, path, [{"", 0_i64, size}], "", head)
+    send_spans(response, path, [{"", 0_i64, size}], "", head, cache)
   end
+end
+
+# Multipart ranges retain offsets only; each part head is consumed in
+# its own round instead of retaining temporary strings in a collection.
+private def send_ranges(response : Response, path : String,
+                        ranges : Array(Tuple(Int64, Int64)), size : Int64,
+                        type : String, boundary : String, head : Bool,
+                        cache : FileCache?) : Nil
+  trailer = "\r\n" + byteranges_tail(boundary)
+  total = trailer.bytesize.to_i64
+  index = 0
+  while index < ranges.size
+    first, last = ranges[index]
+    total += byteranges_part_head(first, last, size, type,
+      boundary).bytesize.to_i64 + last - first + 1_i64
+    total += 2_i64 unless index == 0
+    index += 1
+  end
+  response.set_body("")
+  if head
+    response.headers["Content-Length"] = total.to_s
+    return
+  end
+  streamed = total > FILE_CHUNK_SIZE.to_i64
+  if !streamed && cache
+    if bytes = cache.read(path)
+      index = 0
+      while index < ranges.size
+        first, last = ranges[index]
+        response.print("\r\n") unless index == 0
+        response.print(byteranges_part_head(first, last, size, type, boundary))
+        copy_cached(response, bytes, path, first, last - first + 1_i64)
+        index += 1
+      end
+      response.print(trailer)
+      return
+    end
+  end
+  file = File.open(path, "r", FILE_CHUNK_SIZE)
+  defer file.close
+  if streamed
+    response.headers["Content-Length"] = total.to_s
+    response.flush
+  end
+  index = 0
+  while index < ranges.size
+    first, last = ranges[index]
+    response.print("\r\n") unless index == 0
+    response.print(byteranges_part_head(first, last, size, type, boundary))
+    copy_span(response, file, path, first, last - first + 1_i64, streamed)
+    index += 1
+  end
+  response.print(trailer)
+  response.flush if streamed
 end
 
 # Sends each span's text and then *length* bytes of the file from *first*,
 # and *trailer* after the last span.
-private def send_spans(response : Response, path : String, spans : Array(Tuple(String, Int64, Int64)), trailer : String, head : Bool) : Nil
+private def send_spans(response : Response, path : String, spans : Array(Tuple(String, Int64, Int64)), trailer : String, head : Bool, cache : FileCache?) : Nil
   total = trailer.bytesize.to_i64
   index = 0
   while index < spans.size
@@ -99,9 +156,13 @@ private def send_spans(response : Response, path : String, spans : Array(Tuple(S
   end
 
   streamed = total > FILE_CHUNK_SIZE.to_i64
-  if !streamed && spans.size == 1 && spans[0][0].empty? && spans[0][1] == 0_i64 && trailer.empty?
-    if contents = cached_file(path, spans[0][2])
-      response.print(contents)
+  if !streamed && cache
+    if bytes = cache.read(path)
+      spans.each do |span|
+        response.print(span[0])
+        copy_cached(response, bytes, path, span[1], span[2])
+      end
+      response.print(trailer)
       return
     end
   end
@@ -122,23 +183,6 @@ private def send_spans(response : Response, path : String, spans : Array(Tuple(S
   response.flush if streamed
 end
 
-# The whole file at *path* when it is *size* bytes, from memory while it
-# has not changed, else read and kept; nil when it is not that size.
-private def cached_file(path : String, size : Int64) : String?
-  info = File.info?(path)
-  return nil unless info && info.size == size
-  modified = info.modification_time
-  kept = FILE_CACHE.get { |files| files[path]? }.or_panic
-  return kept[2] if kept && kept[0] == modified && kept[1] == size
-  contents = File.read(path)
-  return nil unless contents.bytesize.to_i64 == size
-  FILE_CACHE.lock do |files|
-    files.clear if files.size >= FILE_CACHE_ENTRIES
-    files[path] = {modified, size, contents}
-  end.or_panic
-  contents
-end
-
 private def copy_span(response : Response, file : IyiIO, path : String, first : Int64, length : Int64, streamed : Bool) : Nil
   file.seek(first)
   remaining = length
@@ -150,4 +194,12 @@ private def copy_span(response : Response, file : IyiIO, path : String, first : 
     response.flush if streamed
     remaining = remaining - chunk.bytesize.to_i64
   end
+end
+
+private def copy_cached(response : Response, bytes : String, path : String,
+                        first : Int64, length : Int64) : Nil
+  if first + length > bytes.bytesize.to_i64
+    raise "#{path} ended before its promised length"
+  end
+  response.print(bytes[first.to_i32, length.to_i32])
 end

@@ -35,55 +35,82 @@ PAGE = <<-HTML
   </script>
   HTML
 
-# The members of the room. Every connection's fiber reaches the same room,
-# and any fiber may send to any socket: `send` never interleaves frames.
-class Room
-  @members : Array(WebSocket)
 
-  def initialize
-    @members = [] of WebSocket
-  end
+import std/base64::{Base64}
+import std/file::{File}
+import std/socket::{IyiSocket}
+import web/context::{Context, SocketHandler}
+import web/router::{Router, RouteAction}
+import web/config::{Config}
+import web/handler::{Handler}
 
-  def join(socket : WebSocket) : Nil
-    @members << socket
-  end
-
-  def leave(socket : WebSocket) : Nil
-    @members.delete(socket)
-  end
-
-  # A member who has gone answers false and is skipped; `on_close` takes
-  # them out of the room.
-  def broadcast(text : String) : Nil
-    @members.each { |member| member.send(text) }
+class Home < RouteAction
+  pub def call(context : Context) : String
+    PAGE
   end
 end
 
-ROOM = Room.new
+# Each socket owner polls the append-only room journal and sends its own
+# frames. No task borrows another connection's WebSocket or write buffer.
+class Chat < SocketHandler
+  def initialize(@journal : String)
+  end
 
-get "/" do |env|
-  PAGE
-end
+  private def publish(text : String) : Nil
+    file = File.open(@journal, "a")
+    defer file.close
+    file.print(Base64.encode(text) + "\n")
+  end
 
-# The block sets the callbacks and returns; the connection's fiber then
-# reads frames and calls them until the socket closes. The browser's
-# `Origin` must be this server's own, which `websocket_allowed_origins`
-# can widen.
-ws "/chat/:name" do |socket, env|
-  name = env.params.url["name"]
-  ROOM.join(socket)
-  ROOM.broadcast(name + " joined")
-  socket.on_message do |text|
-    if text == "/quit"
-      socket.close(1000, "bye " + name)
-    else
-      ROOM.broadcast(name + ": " + text)
+  pub def call(socket : IyiSocket, leftover : String, context : Context,
+               max_message_size : Int32) : Nil
+    ws = WebSocket.new(socket, max_message_size)
+    ws.poll_interval_ms = 25
+    name = context.params.url["name"]
+    offset = File.read(@journal).bytesize
+    publish(name + " joined")
+    defer publish(name + " left")
+    ws.run_events(leftover) do |opcode, text|
+      if opcode == WebSocket::TEXT
+        if text == "/quit"
+          ws.close(1000, "bye " + name)
+        else
+          publish(name + ": " + text)
+        end
+      end
+      unless ws.closed?
+        bytes = File.read(@journal)
+        while ending = bytes.index('\n', offset)
+          ws.send(Base64.decode(bytes[offset, ending - offset]))
+          offset = ending + 1
+        end
+      end
+      nil
     end
   end
-  socket.on_close do |code, reason|
-    ROOM.leave(socket)
-    ROOM.broadcast(name + " left")
+end
+
+pub class Factory
+  def self.with_handler(journal : String,
+                        & : Handler, Config -> Nil) : Nil
+    router = Router.new("")
+    options = Config.new
+    application = App.new(router, options)
+    home = Home.new
+    chat = Chat.new(journal)
+    application.get("/", home)
+    application.ws("/chat/:name", chat)
+    with_handler_chain(application) do |handler|
+      yield handler, options
+    end
+    nil
   end
 end
 
-run
+def main : Nil
+  journal = File.tempfile("web-chat-", ".log")
+  File.write(journal, "")
+  defer File.delete(journal)
+  run(journal, Factory)
+end
+main

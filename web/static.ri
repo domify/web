@@ -44,6 +44,7 @@ pub class StaticHandler < Handler
   pub def call(ctx : Context) : Nil
     return call_next(ctx) unless ctx.request.method.in?("GET", "HEAD")
 
+    ctx.file_cache = file_cache unless ctx.file_cache
     relative = ctx.request.path
     return call_next(ctx) if relative.empty? || !relative.starts_with?('/')
     return call_next(ctx) if contains_dotdot?(relative) || relative.includes?("\u0000")
@@ -127,7 +128,7 @@ pub class StaticHandler < Handler
       send_body(ctx, encode_body(File.read(path), encoding))
       return
     end
-    respond_file(ctx.response, path, size, ranged, type, ctx.request.method == "HEAD")
+    respond_file(ctx.response, path, size, ranged, type, ctx.request.method == "HEAD", ctx.file_cache)
   end
 
   # `If-None-Match` wins when present (weak comparison, `*` matches any);
@@ -149,7 +150,7 @@ pub class StaticHandler < Handler
   end
 
   private def list_directory(ctx : Context, dir : String, relative : String) : Nil
-    items = [] of String
+    items = ""
     Dir.children(dir).sorted.each do |name|
       nested = File.directory?(join_paths(dir, name))
       shown = nested ? name + "/" : name
@@ -158,7 +159,7 @@ pub class StaticHandler < Handler
     end
     title = "Directory listing for " + HTML.escape(relative)
     ctx.response.content_type = "text/html; charset=utf-8"
-    send_body(ctx, "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>" + title + "</title></head><body><h2>" + title + "</h2><ul>" + items.join + "</ul></body></html>\n")
+    send_body(ctx, "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><title>" + title + "</title></head><body><h2>" + title + "</h2><ul>" + items + "</ul></body></html>\n")
   end
 
   private def send_body(ctx : Context, body : String) : Nil

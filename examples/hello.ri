@@ -2,8 +2,42 @@ module examples/hello
 
 import web/dsl::*
 
-get "/" do |env|
-  "Hello World!"
+
+
+import web/handler::{Handler}
+import web/router::{Router}
+import web/config::{Config}
+
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
+
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "Hello World!"
+  end
 end
 
-run
+
+pub class Factory
+  def self.with_handler(data : Int32,
+                        & : Handler, Config -> Nil) : Nil
+    router = Router.new("")
+    options = Config.new
+    application = App.new(router, options)
+    route_action_1 = Route1.new
+    application.get("/", route_action_1)
+
+    with_handler_chain(application) do |handler|
+      yield handler, options
+    end
+    nil
+  end
+
+end
+
+run(0, Factory)

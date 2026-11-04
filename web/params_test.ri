@@ -7,9 +7,17 @@ import web/request::{Request}
 import web/headers::{Headers}
 import web/spec::*
 
+def params_from(request : Request, url : Hash(String, String), & : Params -> Nil) : Nil
+  params = Params.new(request)
+  params.update_url(url)
+  yield params
+end
+
 describe "Params" do
   it "starts with empty tables" do
-    empty = Params.empty
+    empty_headers = Headers.new
+    empty_request = Request.new("GET", "/", "", "HTTP/1.1", empty_headers, "")
+    empty = Params.new(empty_request)
     assert empty.url.empty?
     assert empty.query.empty?
     assert empty.body.empty?
@@ -22,128 +30,170 @@ describe "Params" do
     headers["Content-Type"] = "application/x-www-form-urlencoded; charset=utf-8"
     req = Request.new("POST", "/users", "q=from-query&id=query-id", "HTTP/1.1", headers, "name=iyi&id=body-id")
     url = {"id" => "url-id"}
-    params = Params.from(req, url)
+    params_from(req, url) do |params|
 
-    assert params.url["id"] == "url-id"
-    assert params.query["q"] == "from-query"
-    assert params.query["id"] == "query-id"
-    assert params.body["name"] == "iyi"
-    assert params.body["id"] == "body-id"
+      assert params.url["id"] == "url-id"
+      assert params.query["q"] == "from-query"
+      assert params.query["id"] == "query-id"
+      assert params.body["name"] == "iyi"
+      assert params.body["id"] == "body-id"
+    end
   end
 
   it "treats plus as space in a form body" do
     headers = Headers.new
     headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = Request.new("POST", "/", "", "HTTP/1.1", headers, "msg=hello+world")
-    params = Params.from(req, {} of String => String)
-    assert params.body["msg"] == "hello world"
+    params_from(req, {} of String => String) do |params|
+      assert params.body["msg"] == "hello world"
+    end
   end
 
   it "looks up url, then query, then body" do
     headers = Headers.new
     headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = Request.new("POST", "/users", "q=from-query&id=query-id", "HTTP/1.1", headers, "name=iyi&id=body-id")
-    params = Params.from(req, {"id" => "url-id"})
+    params_from(req, {"id" => "url-id"}) do |params|
 
-    assert params["id"] == "url-id"
-    assert params["q"] == "from-query"
-    assert params["name"] == "iyi"
-    assert params.has_key?("name")
-    assert !params.has_key?("missing")
-    assert params["nope"]?.nil?
+      assert params["id"] == "url-id"
+      assert params["q"] == "from-query"
+      assert params["name"] == "iyi"
+      assert params.has_key?("name")
+      assert !params.has_key?("missing")
+      assert params["nope"]?.nil?
+    end
   end
 
   it "does not parse a JSON or untyped body as a form" do
     json_headers = Headers.new
     json_headers["Content-Type"] = "application/json"
     json_req = Request.new("POST", "/", "", "HTTP/1.1", json_headers, "{\"a\":1}")
-    assert Params.from(json_req, {} of String => String).body.empty?
+    params_from(json_req, {} of String => String) do |made201|
+      assert made201.body.empty?
+    end
 
-    plain = Params.from(Request.new("POST", "/", "", "HTTP/1.1", Headers.new, "a=1"), {} of String => String)
-    assert plain.body.empty?
+    plain_headers = Headers.new
+    plain_request = Request.new("POST", "/", "", "HTTP/1.1", plain_headers, "a=1")
+    params_from(plain_request, {} of String => String) do |plain|
+      assert plain.body.empty?
+    end
   end
 
   it "replaces the url table on update_url" do
-    params = Params.empty
+    empty_headers = Headers.new
+    empty_request = Request.new("GET", "/", "", "HTTP/1.1", empty_headers, "")
+    params = Params.new(empty_request)
     params.update_url({"id" => "next"})
     assert params.url["id"] == "next"
   end
 
   it "parses a JSON object body into json and keeps raw_body" do
-    params = Params.from(typed("application/json; charset=utf-8", %({"name":"ada","tags":["x"],"n":2})), {} of String => String)
-    assert params.json_valid?
-    assert params.json["name"].as_s == "ada"
-    assert params.json["tags"].as_a.size == 1
-    assert params.raw_body == %({"name":"ada","tags":["x"],"n":2})
-    assert params.body.empty?
+    typed("application/json; charset=utf-8", %({"name":"ada","tags":["x"],"n":2})) do |made203|
+      params_from(made203, {} of String => String) do |params|
+        assert params.json_valid?
+        assert params.json["name"].as_s == "ada"
+        assert params.json["tags"].as_a.size == 1
+        assert params.raw_body == %({"name":"ada","tags":["x"],"n":2})
+        assert params.body.empty?
+      end
+    end
   end
 
   it "keeps a top-level array under _json and ignores a scalar" do
-    list = Params.from(typed("application/json", "[1,2,3]"), {} of String => String)
-    assert list.json["_json"].as_a.size == 3
-    scalar = Params.from(typed("application/json", "42"), {} of String => String)
-    assert scalar.json.empty?
-    assert scalar.json_valid?
+    typed("application/json", "[1,2,3]") do |made205|
+      params_from(made205, {} of String => String) do |list|
+        assert list.json["_json"].as_a.size == 3
+        typed("application/json", "42") do |made207|
+          params_from(made207, {} of String => String) do |scalar|
+            assert scalar.json.empty?
+            assert scalar.json_valid?
+          end
+        end
+      end
+    end
   end
 
   it "treats application/*+json as JSON and other types as not" do
-    vendor = Params.from(typed("Application/Vnd.Api+JSON", %({"a":"b"})), {} of String => String)
-    assert vendor.json["a"].as_s == "b"
-    padded = Params.from(typed("application/jsonp", %({"a":"b"})), {} of String => String)
-    assert padded.json.empty?
+    typed("Application/Vnd.Api+JSON", %({"a":"b"})) do |made209|
+      params_from(made209, {} of String => String) do |vendor|
+        assert vendor.json["a"].as_s == "b"
+        typed("application/jsonp", %({"a":"b"})) do |made211|
+          params_from(made211, {} of String => String) do |padded|
+            assert padded.json.empty?
+          end
+        end
+      end
+    end
   end
 
   it "reports a JSON body that does not parse" do
-    broken = Params.from(typed("application/json", "{\"a\":"), {} of String => String)
-    assert !broken.json_valid?
-    assert broken.json.empty?
-    assert Params.from(typed("application/json", ""), {} of String => String).json_valid?
+    typed("application/json", "{\"a\":") do |made213|
+      params_from(made213, {} of String => String) do |broken|
+        assert !broken.json_valid?
+        assert broken.json.empty?
+        typed("application/json", "") do |made215|
+          params_from(made215, {} of String => String) do |made216|
+            assert made216.json_valid?
+          end
+        end
+      end
+    end
   end
 
   it "reads multipart fields and files, and deletes the files on cleanup" do
-    params = Params.from(typed("multipart/form-data; boundary=XyZ", upload_body), {} of String => String)
-    assert params.body_error.nil?
-    assert params.body["title"] == "Holiday"
-    assert params["title"] == "Holiday"
-    photo = params.files["photo"]
-    assert photo.filename == "a.jpg"
-    assert photo.content_type == "image/jpeg"
-    assert photo.read == "JPG"
-    assert params.all_files["extra[]"].size == 2
-    path = photo.path
-    assert File.exists?(path)
-    params.cleanup
-    assert !File.exists?(path)
+    typed("multipart/form-data; boundary=XyZ", upload_body) do |made217|
+      params_from(made217, {} of String => String) do |params|
+        assert params.body_error.nil?
+        assert params.body["title"] == "Holiday"
+        assert params["title"] == "Holiday"
+        photo = params.files["photo"]
+        assert photo.filename == "a.jpg"
+        assert photo.content_type == "image/jpeg"
+        assert photo.read == "JPG"
+        assert params.all_files("extra[]").size == 2
+        path = photo.path
+        assert File.exists?(path)
+        params.cleanup
+        assert !File.exists?(path)
+      end
+    end
   end
 
   it "keeps every value of a repeated query name in order, and the last in query" do
-    req = Request.new("GET", "/", "tag=a&other=x&tag=b&tag=c", "HTTP/1.1", Headers.new, "")
-    params = Params.from(req, {} of String => String)
-    assert params.query_all("tag") == ["a", "b", "c"]
-    assert params.query_all("other") == ["x"]
-    assert params.query["tag"] == "c"
-    assert params["tag"] == "c"
-    assert params.query_all("missing").empty?
-    assert params.body_all("tag").empty?
+    headers = Headers.new
+    req = Request.new("GET", "/", "tag=a&other=x&tag=b&tag=c",
+      "HTTP/1.1", headers, "")
+    params_from(req, {} of String => String) do |params|
+      assert params.query_all("tag") == ["a", "b", "c"]
+      assert params.query_all("other") == ["x"]
+      assert params.query["tag"] == "c"
+      assert params["tag"] == "c"
+      assert params.query_all("missing").empty?
+      assert params.body_all("tag").empty?
+    end
   end
 
   it "matches a bracketed name as sent" do
-    req = Request.new("GET", "/", "tag[]=a&tag%5B%5D=b&tag=c", "HTTP/1.1", Headers.new, "")
-    params = Params.from(req, {} of String => String)
-    assert params.query_all("tag[]") == ["a", "b"]
-    assert params.query_all("tag") == ["c"]
-    assert params.query["tag[]"] == "b"
+    headers = Headers.new
+    req = Request.new("GET", "/", "tag[]=a&tag%5B%5D=b&tag=c",
+      "HTTP/1.1", headers, "")
+    params_from(req, {} of String => String) do |params|
+      assert params.query_all("tag[]") == ["a", "b"]
+      assert params.query_all("tag") == ["c"]
+      assert params.query["tag[]"] == "b"
+    end
   end
 
   it "keeps every value of a repeated form field, apart from the query's" do
     headers = Headers.new
     headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = Request.new("POST", "/", "tag=q", "HTTP/1.1", headers, "tag=a&ids[]=1&tag=b&ids[]=2")
-    params = Params.from(req, {} of String => String)
-    assert params.body_all("tag") == ["a", "b"]
-    assert params.body_all("ids[]") == ["1", "2"]
-    assert params.body["tag"] == "b"
-    assert params.query_all("tag") == ["q"]
+    params_from(req, {} of String => String) do |params|
+      assert params.body_all("tag") == ["a", "b"]
+      assert params.body_all("ids[]") == ["1", "2"]
+      assert params.body["tag"] == "b"
+      assert params.query_all("tag") == ["q"]
+    end
   end
 
   it "keeps every value of a repeated multipart text field" do
@@ -152,10 +202,13 @@ describe "Params" do
            "--XyZ\r\nContent-Disposition: form-data; name=\"tag\"\r\n\r\nb\r\n" +
            "--XyZ\r\nContent-Disposition: form-data; name=\"tag[]\"\r\n\r\ny\r\n" +
            "--XyZ--\r\n"
-    params = Params.from(typed("multipart/form-data; boundary=XyZ", body), {} of String => String)
-    assert params.body_all("tag") == ["a", "b"]
-    assert params.body_all("tag[]") == ["x", "y"]
-    assert params.body["tag"] == "b"
+    typed("multipart/form-data; boundary=XyZ", body) do |made222|
+      params_from(made222, {} of String => String) do |params|
+        assert params.body_all("tag") == ["a", "b"]
+        assert params.body_all("tag[]") == ["x", "y"]
+        assert params.body["tag"] == "b"
+      end
+    end
   end
 
   it "gives one value per key for tables passed in directly" do
@@ -164,13 +217,37 @@ describe "Params" do
     assert params.body_all("f") == ["two"]
   end
 
+  it "keeps upload views across repeated lookup and parsing calls" do
+    typed("multipart/form-data; boundary=XyZ", upload_body) do |request|
+      params_from(request, {} of String => String) do |params|
+        files = params.files
+        photo = files["photo"]
+        assert files.size == 1
+        assert files.has_key?("photo")
+        assert files["missing"]?.nil?
+        assert params.body_error.nil?
+        assert params.files["photo"].path == photo.path
+        assert params.body["title"] == "Holiday"
+        assert photo.read == "JPG"
+        params.cleanup
+        assert !File.exists?(photo.path)
+      end
+    end
+  end
+
   it "reports a multipart body it cannot read" do
-    missing = Params.from(typed("multipart/form-data", upload_body), {} of String => String)
-    assert missing.body_error == 400
-    limited = Params.from(typed("multipart/form-data; boundary=XyZ", upload_body), {} of String => String)
-    limited.limit_uploads(1, 1024)
-    assert limited.body_error == 413
-    assert limited.files.empty?
+    typed("multipart/form-data", upload_body) do |made224|
+      params_from(made224, {} of String => String) do |missing|
+        assert missing.body_error == 400
+        typed("multipart/form-data; boundary=XyZ", upload_body) do |made226|
+          params_from(made226, {} of String => String) do |limited|
+            limited.limit_uploads(1, 1024)
+            assert limited.body_error == 413
+            assert limited.files.empty?
+          end
+        end
+      end
+    end
   end
 end
 
@@ -182,8 +259,8 @@ def upload_body : String
     "--XyZ--\r\n"
 end
 
-def typed(content_type : String, body : String) : Request
+def typed(content_type : String, body : String, & : Request -> Nil) : Nil
   headers = Headers.new
   headers["Content-Type"] = content_type
-  Request.new("POST", "/", "", "HTTP/1.1", headers, body)
+  yield Request.new("POST", "/", "", "HTTP/1.1", headers, body)
 end

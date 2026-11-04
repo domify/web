@@ -6,21 +6,26 @@ import web/request::{Request, ParseError, parse_head, with_body, split_target}
 import web/headers::{Headers}
 import web/spec::*
 
-def parsed(block : String) : Request
-  case parse_head(block)
-  in ParseError
-    assert false, "parse_head failed: #{block.inspect}"
-    Request.new("GET", "/", "", "HTTP/1.1", Headers.new, "")
-  in Request
-    it
+def parsed(block : String, & : Request -> Nil) : Nil
+  table = Headers.new
+  parse_head(block, table) do |got|
+    case got
+    in ParseError
+      assert false, "parse_head failed: #{block.inspect}"
+    in Request
+      yield got
+    end
   end
 end
 
 def assert_error(block : String) : Nil
-  case parse_head(block)
-  in ParseError
-  in Request
-    assert false, "expected ParseError"
+  table = Headers.new
+  parse_head(block, table) do |got|
+    case got
+    in ParseError
+    in Request
+      assert false, "expected ParseError"
+    end
   end
 end
 
@@ -51,32 +56,42 @@ end
 
 describe "parse_head" do
   it "reads method, path, version and well-known headers" do
-    req = parsed("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
-    assert req.method == "POST"
-    assert req.path == "/echo"
-    assert req.version == "HTTP/1.1"
-    assert req.host == "localhost"
-    assert req.content_type == "application/json"
-    assert req.content_length == 2
-    assert req.body == "{}"
-    assert !req.keep_alive?
-    assert with_body(req, "xx").body == "xx"
+    parsed("POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}") do |req|
+      assert req.method == "POST"
+      assert req.path == "/echo"
+      assert req.version == "HTTP/1.1"
+      assert req.host == "localhost"
+      assert req.content_type == "application/json"
+      assert req.content_length == 2
+      assert req.body == "{}"
+      assert !req.keep_alive?
+      assert with_body(req, "xx").body == "xx"
+    end
   end
 
   it "defaults keep-alive from the HTTP version" do
-    assert parsed("GET / HTTP/1.1\r\nHost: localhost").keep_alive?
-    assert !parsed("GET / HTTP/1.0\r\nHost: localhost").keep_alive?
+    parsed("GET / HTTP/1.1\r\nHost: localhost") do |made8|
+      assert made8.keep_alive?
+    end
+    parsed("GET / HTTP/1.0\r\nHost: localhost") do |made9|
+      assert !made9.keep_alive?
+    end
   end
 
   it "honours an explicit Connection header, case-insensitively" do
-    assert parsed("GET / HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive").keep_alive?
-    assert !parsed("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Close").keep_alive?
+    parsed("GET / HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive") do |made10|
+      assert made10.keep_alive?
+    end
+    parsed("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Close") do |made11|
+      assert !made11.keep_alive?
+    end
   end
 
   it "turns an asterisk target into /" do
-    star = parsed("OPTIONS * HTTP/1.1\r\nHost: localhost")
-    assert star.method == "OPTIONS"
-    assert star.path == "/"
+    parsed("OPTIONS * HTTP/1.1\r\nHost: localhost") do |star|
+      assert star.method == "OPTIONS"
+      assert star.path == "/"
+    end
   end
 
   it "refuses a Content-Length that is not a number" do
@@ -84,14 +99,16 @@ describe "parse_head" do
   end
 
   it "joins the values of a repeated header" do
-    req = parsed("GET / HTTP/1.1\r\nHost: h\r\nX-A: first\r\nX-A: second")
-    assert req.headers["X-A"] == "first, second"
+    parsed("GET / HTTP/1.1\r\nHost: h\r\nX-A: first\r\nX-A: second") do |req|
+      assert req.headers["X-A"] == "first, second"
+    end
   end
 
   it "leaves missing Host and Content-Type empty" do
-    req = parsed("GET / HTTP/1.0")
-    assert req.host == ""
-    assert req.content_type == ""
+    parsed("GET / HTTP/1.0") do |req|
+      assert req.host == ""
+      assert req.content_type == ""
+    end
   end
 
   it "rejects a request that is not a well-formed header block" do

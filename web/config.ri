@@ -1,8 +1,7 @@
 # Application settings. A value, not a pile of class variables: the
 # original's `Config::INSTANCE` and the five arrays beside it were why
-# tests had to `clear` the world between examples. The DSL still has one
-# process-wide config, because that is the Sinatra contract; it is this
-# object rather than a handful of globals.
+# tests had to `clear` the world between examples. Each serving task and
+# each DSL app holds its own; no process-wide one exists.
 module web/config
 
 import std/file::{File}
@@ -12,7 +11,10 @@ import web/log::{Logger, StdoutLogger}
 
 # Called for every file the static handler serves, before its body is
 # written: the context, the file's path and its `File::Info`.
-pub alias StaticHeadersHook = Proc(Context, String, File::Info, Nil)
+pub abstract class StaticHeadersHook
+  pub abstract def call(context : Context, path : String,
+                        info : File::Info) : Nil
+end
 
 pub class Config
   @app_name : String
@@ -45,10 +47,10 @@ pub class Config
   @idle_timeout : Int32?
   @unix_socket : String?
   @websocket_allowed_origins : Array(String)
+  @origin_text : String::Builder
   @websocket_max_message_size : Int32
 
-  def initialize
-    @app_name = "web"
+  def initialize(@app_name : String = "web")
     @host = "0.0.0.0"
     @port = 3000
     env = Program.env("WEB_ENV")
@@ -82,6 +84,7 @@ pub class Config
     @idle_timeout = 75
     @unix_socket = nil
     @websocket_allowed_origins = [] of String
+    @origin_text = String::Builder.new
     @websocket_max_message_size = 8 * 1024 * 1024
   end
 
@@ -339,7 +342,15 @@ pub class Config
   end
 
   pub def websocket_allowed_origins=(value : Array(String)) : Array(String)
-    @websocket_allowed_origins = value
+    @websocket_allowed_origins.clear
+    @origin_text.clear
+    value.each do |origin|
+      at = @origin_text.bytesize
+      @origin_text.append(origin)
+      @websocket_allowed_origins <<
+        @origin_text.finish[at, origin.bytesize]
+    end
+    @websocket_allowed_origins
   end
 
   # The largest WebSocket message a client may send, in bytes, fragments
@@ -367,14 +378,4 @@ pub class Config
     @show_exceptions = value
     value
   end
-end
-
-INSTANCE = Config.new
-
-pub def config : Config
-  INSTANCE
-end
-
-pub def add_handler(handler : Handler) : Nil
-  INSTANCE.add_handler(handler)
 end

@@ -1,7 +1,6 @@
-# Process-wide config is one object, not a pile of class variables.
+# Config is one value each owner holds, not a pile of class variables.
 module web/config_test
 
-import web/config::*
 import web/handler::{Handler}
 import web/spec::*
 
@@ -53,11 +52,5 @@ describe "Config" do
     fresh = Config.new
     fresh.add_handler(Handler.new)
     assert fresh.custom_handlers.size == 1
-  end
-
-  it "is the process singleton behind config()" do
-    shared = config
-    shared.env = "test"
-    assert config.env == "test"
   end
 end

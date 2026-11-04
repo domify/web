@@ -5,13 +5,19 @@ module web/harness
 
 import std/http::{HTTP}
 import std/text
+import std/socket::{IyiSocket}
+import std/time::{Time, Span}
+import web/server::{Server}
 import web/headers::{Headers}
 import web/request::{Request}
-import web/context::{Context}
+import web/context::{Context, with_context}
 import web/handler::{Handler}
-import web/router::{Router, RouteHandler}
+import web/response::{Response}
+import web/params::{Params}
 
-pub def http_request(method : String, path : String, query : String = "", body : String = "", content_type : String = "") : Request
+# Everything a handler needs lives in the block's frame: a Request, and
+# with `dispatch` its Context, are read inside the block.
+pub def http_request(method : String, path : String, query : String = "", body : String = "", content_type : String = "", & : Request -> Nil) : Nil
   headers = Headers.new
   headers["Host"] = "localhost"
   if !content_type.empty?
@@ -20,29 +26,36 @@ pub def http_request(method : String, path : String, query : String = "", body :
   if !body.empty?
     headers["Content-Length"] = body.bytesize.to_s
   end
-  Request.new(method, path, query, "HTTP/1.1", headers, body)
+  request = Request.new(method, path, query, "HTTP/1.1", headers, body)
+  yield request
+  nil
 end
 
-pub def dispatch(handler : Handler, request : Request) : Context
-  ctx = Context.for(request)
+pub def form_request(method : String, path : String, body : String, & : Request -> Nil) : Nil
+  http_request(method, path, "", body, "application/x-www-form-urlencoded") { |request| yield request }
+end
+
+pub def dispatch(handler : Handler, request : Request,
+                 & : Context -> Nil) : Nil
+  headers = Headers.new
+  response = Response.new(headers)
+  params = Params.new(request)
+  ctx = Context.new(request, response, params)
+  ctx.file_cache = handler.file_cache
   handler.call(ctx)
-  ctx
+  yield ctx
+  nil
 end
 
-pub def dispatch(handler : Handler, method : String, path : String) : Context
-  dispatch(handler, http_request(method, path))
-end
-
-# Isolated app: a Router filled by the block, already wrapped as a Handler.
-# Each example builds its own so one route cannot rewrite the next.
-pub def routes(& : Router -> Nil) : RouteHandler
-  router = Router.new
-  yield router
-  RouteHandler.new(router)
-end
-
-pub def form_request(method : String, path : String, body : String) : Request
-  http_request(method, path, "", body, "application/x-www-form-urlencoded")
+pub def dispatch(handler : Handler, method : String, path : String,
+                 & : Context -> Nil) : Nil
+  headers = Headers.new
+  headers["Host"] = "localhost"
+  request = Request.new(method, path, "", "HTTP/1.1", headers, "")
+  dispatch(handler, request) do |ctx|
+    yield ctx
+    nil
+  end
 end
 
 # First line of an HTTP/1.1 response, without the CRLF.
@@ -96,4 +109,131 @@ pub def http_frame_size(raw : String) : Int32?
   rest = rest_len > 0 ? raw[sep + 4, rest_len] : ""
   extra = 0 if extra > 0 && rest.starts_with?("HTTP/")
   sep + 4 + extra
+end
+
+# Each factory has distinct readiness and activity queues.
+pub struct ServerReady(F)
+end
+
+pub struct ServerActivity(F)
+  getter change : Int32
+  def initialize(@change : Int32)
+  end
+end
+
+pub def server_listening(factory : F.class, port : Int32) : Nil forall F
+  raise "readiness queue full" unless RisBoard.post(ServerReady(F).new)
+end
+
+pub def server_activity(factory : F.class, change : Int32) : Nil forall F
+  unless RisBoard.post(ServerActivity(F).new(change))
+    raise "activity queue full"
+  end
+end
+
+# This handle belongs to the caller. It contains no listener or handler.
+pub class RunningServer(F)
+  getter bound_port : Int32
+
+  def initialize(@task : IyiTask(Int32), @group : IyiGroup,
+                 @bound_port : Int32, @tasks : Int32, @timeout : Int32)
+    @stopping = false
+    @deadline = Span.zero
+    @active = 0
+  end
+
+  pub def in_flight : Int32
+    loop do
+      result = RisBoard.poll(ServerActivity(F))
+      break if result.is_a?(Cancelled) || !result[1]
+      event = result[0]
+      if event
+        @active += event.change
+      end
+    end
+    @active
+  end
+
+  pub def close : Nil
+    begin_stop(@timeout)
+  end
+
+  private def begin_stop(timeout : Int32) : Nil
+    deadline = Time.monotonic + Span.seconds(timeout.to_i64)
+    @deadline = deadline if !@stopping || deadline < @deadline
+    return if @stopping
+    @stopping = true
+    Server.stop(F, @tasks)
+  end
+
+  pub def shutdown(timeout : Int32 = @timeout) : Nil
+    begin_stop(timeout)
+    remaining = @deadline - Time.monotonic
+    ms = remaining.total_seconds_i64 * 1000_i64 +
+      (remaining.nanoseconds // 1000000).to_i64
+    wait = ms <= 0 ? 0 : (ms > 2147483647 ? 2147483647 : ms.to_i32)
+    @group.cancel_children unless @task.wait(wait).nil?
+    result = @task.value
+    raise result.text if result.is_a?(Panicked)
+    Server.clear_stops(F)
+  end
+end
+
+pub def clear_server_events(factory : F.class) : Nil forall F
+  loop do
+    ready = RisBoard.poll(ServerReady(F))
+    break if ready.is_a?(Cancelled) || !ready[1]
+  end
+  loop do
+    event = RisBoard.poll(ServerActivity(F))
+    break if event.is_a?(Cancelled) || !event[1]
+  end
+end
+
+pub def with_server(config : C, factory : F.class, tasks : Int32 = 4,
+                    host : String = "127.0.0.1", port : Int32 = 0,
+                    timeout : Int32 = 5,
+                    & : RunningServer(F) -> Nil) : Nil forall C, F
+  clear_server_events(F)
+  chosen = port
+  if chosen == 0
+    probe = IyiSocket.listen(host, 0)
+    chosen = probe.local_port
+    probe.close
+  end
+  image = RisTaskConfig.new({host, chosen, config})
+  defer image.close
+  group do |g|
+    task = g.spawn do
+      address, number, settings = image.read(Tuple(String, Int32, C))
+      Server.serve(address, number, settings, F, tasks: tasks)
+      0
+    end
+    tasks.times { RisBoard.take(ServerReady(F)).or_panic }
+    running = RunningServer(F).new(task, g, chosen, tasks, timeout)
+    defer running.shutdown(0)
+    yield running
+    running.shutdown
+    0
+  end
+end
+
+pub def with_unix_server(path : String, config : C, factory : F.class,
+                         & : RunningServer(F) -> Nil) : Nil forall C, F
+  clear_server_events(F)
+  image = RisTaskConfig.new({path, config})
+  defer image.close
+  group do |g|
+    task = g.spawn do
+      socket_path, settings = image.read(Tuple(String, C))
+      Server.serve_unix(socket_path, settings, F)
+      0
+    end
+    RisBoard.take(ServerReady(F)).or_panic
+    running = RunningServer(F).new(task, g, 0, 1, 5)
+    defer running.shutdown(0)
+    yield running
+    running.shutdown
+    0
+  end
 end

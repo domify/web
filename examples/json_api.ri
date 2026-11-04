@@ -11,7 +11,8 @@ import std/json::{ToJSON, Builder}
 import web/dsl::*
 import web/context::{Context}
 
-class Todo
+@[OnTape]
+struct Todo
   getter id : Int32
   property title : String
   property done : Bool
@@ -34,7 +35,7 @@ end
 
 # Kept in memory for as long as the program runs. A constant cannot be
 # reassigned, so the last id given out lives in an object.
-TODOS = {} of Int32 => Todo
+
 
 class Ids
   @last = 0
@@ -44,13 +45,44 @@ class Ids
   end
 end
 
-IDS = Ids.new
+
+
+class Todos
+  def initialize
+    @text = String::Builder.new
+    @rows = {} of Int32 => Tuple(Int32, Int32, Bool)
+    @last = 0
+  end
+  def next : Int32
+    @last += 1
+  end
+  def []=(id : Int32, todo : Todo) : Nil
+    at = @text.bytesize
+    @text.append(todo.title)
+    @rows[id] = {at, todo.title.bytesize, todo.done}
+    nil
+  end
+  def []?(id : Int32) : Todo?
+    row = @rows[id]?
+    row ? Todo.new(id, @text.finish[row[0], row[1]], row[2]) : nil
+  end
+  def [](id : Int32) : Todo
+    self[id]? || raise "missing todo"
+  end
+  def values : Array(Todo)
+    @rows.keys.map { |id| self[id] }
+  end
+  def delete(id : Int32) : Nil
+    @rows.delete(id)
+    nil
+  end
+end
 
 # The todo named by `:id`, or a `404` that ends the request. A segment that
 # is not a number names no todo either.
-def find_todo(env : Context) : Todo?
+def find_todo(env : Context, todos : Todos) : Todo?
   id = env.params.url["id"].to_i?
-  todo = id ? TODOS[id]? : nil
+  todo = id ? todos[id]? : nil
   env.halt(404, %({"error":"not found"})) unless todo
   todo
 end
@@ -62,55 +94,161 @@ def json_string(env : Context, key : String) : String?
 end
 
 # `halt` sends its body as is; give error bodies the JSON content type too.
-before_all "/todos/*" do |env|
-  env.response.content_type = "application/json; charset=utf-8"
-end
 
-# A body declared as JSON that does not parse gets `400` before the route
-# runs; this page replaces the default text.
-error 400 do |env|
-  env.json({"error" => "invalid JSON"})
-end
+import web/headers::{Headers}
+import web/handler::{Handler}
+import web/router::{Router}
+import web/config::{Config}
 
-get "/todos" do |env|
-  env.json(TODOS.values)
-end
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
 
-get "/todos/:id" do |env|
-  if todo = find_todo(env)
-    env.json(todo)
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.content_type = "application/json; charset=utf-8"
   end
 end
 
-post "/todos" do |env|
-  title = json_string(env, "title")
-  if title.nil? || title.empty?
-    env.halt(422, %({"error":"title is required"}))
-  else
-    id = IDS.next
-    TODOS[id] = Todo.new(id, title)
-    env.status(201).json(TODOS[id])
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.json({"error" => "invalid JSON"})
   end
 end
 
-patch "/todos/:id" do |env|
-  if todo = find_todo(env)
-    if title = json_string(env, "title")
-      todo.title = title
+class Route3 < RouteAction
+  def initialize(@todos : Todos)
+  end
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.json(@todos.values)
+  end
+end
+
+class Route4 < RouteAction
+  def initialize(@todos : Todos)
+  end
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    if todo = find_todo(env, @todos)
+      env.json(todo)
     end
-    if done = env.params.json["done"]?
-      todo.done = done.as_bool? == true
+  end
+end
+
+class Route5 < RouteAction
+  def initialize(@todos : Todos)
+  end
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    title = json_string(env, "title")
+    if title.nil? || title.empty?
+      env.halt(422, %({"error":"title is required"}))
+    else
+      id = @todos.next
+      @todos[id] = Todo.new(id, title)
+      env.status(201).json(@todos[id])
     end
-    env.json(todo)
   end
 end
 
-delete "/todos/:id" do |env|
-  if todo = find_todo(env)
-    TODOS.delete(todo.id)
-    env.response.status_code = 204
+class Route6 < RouteAction
+  def initialize(@todos : Todos)
   end
-  nil
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    if todo = find_todo(env, @todos)
+      if title = json_string(env, "title")
+        todo.title = title
+      end
+      if done = env.params.json["done"]?
+        todo.done = done.as_bool? == true
+      end
+      @todos[todo.id] = todo
+      env.json(todo)
+    end
+  end
 end
 
-run
+class Route7 < RouteAction
+  def initialize(@todos : Todos)
+  end
+
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    if todo = find_todo(env, @todos)
+      @todos.delete(todo.id)
+      env.response.status_code = 204
+    end
+    nil
+  end
+end
+
+
+pub class Factory
+  def self.with_handler(data : Int32,
+                        & : Handler, Config -> Nil) : Nil
+    router = Router.new("")
+    options = Config.new
+    application = App.new(router, options)
+    todos = Todos.new
+    route_action_1 = Route1.new
+    application.before_all("/todos/*", route_action_1)
+
+    # A body declared as JSON that does not parse gets `400` before the route
+    # runs; this page replaces the default text.
+    route_action_2 = Route2.new
+    application.error(400, route_action_2)
+
+    route_action_3 = Route3.new(todos)
+    application.get("/todos", route_action_3)
+
+    route_action_4 = Route4.new(todos)
+    application.get("/todos/:id", route_action_4)
+
+    route_action_5 = Route5.new(todos)
+    application.post("/todos", route_action_5)
+
+    route_action_6 = Route6.new(todos)
+    application.patch("/todos/:id", route_action_6)
+
+    route_action_7 = Route7.new(todos)
+    application.delete("/todos/:id", route_action_7)
+
+
+    with_handler_chain(application) do |handler|
+      yield handler, options
+    end
+    nil
+  end
+end
+
+# A single task owns this example's in-memory store across requests.
+run(0, Factory, tasks: 1)

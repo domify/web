@@ -8,7 +8,13 @@ import std/int
 
 # *count* random bytes as `2 * count` lower-case hex digits.
 pub def random_hex(count : Int32) : String
-  hex(random_bytes(count))
+  digits = "0123456789abcdef"
+  text = String::Builder.new(count * 2 + 1)
+  each_random_byte(count) do |byte|
+    text.write_byte(digits.byte_at((byte >> 4).to_i32))
+    text.write_byte(digits.byte_at((byte & 15_u8).to_i32))
+  end
+  text.finish
 end
 
 # `File.exists?` is an open for reading, so it answers whether the device
@@ -17,29 +23,19 @@ end
 # Where there is no `/dev/urandom` - Windows, wasm32 - the bytes come from
 # `std/random` seeded by `Random.new`, which reads the platform's own
 # entropy (`RtlGenRandom` on Windows; the clocks on wasm32, which has none).
-private def random_bytes(count : Int32) : String
+private def each_random_byte(count : Int32, & : UInt8 -> Nil) : Nil
   {% if !flag?(:wasm32) %}
     if File.exists?("/dev/urandom")
-      bytes = ""
-      File.open("/dev/urandom", "r", count) do |io|
-        bytes = io.read_bytes(count)
+      file = File.open("/dev/urandom", "r", count)
+      defer file.close
+      bytes = file.read_bytes(count)
+      if bytes.bytesize == count
+        bytes.each_byte { |byte| yield byte }
+        return
       end
-      return bytes if bytes.bytesize == count
     end
   {% end %}
 
   rng = Random.new
-  String.build(count) do |io|
-    count.times { io.write_byte((rng.next_u & 255_u32).to_u8) }
-  end
-end
-
-private def hex(bytes : String) : String
-  digits = "0123456789abcdef"
-  String.build(bytes.bytesize * 2) do |io|
-    bytes.each_byte do |byte|
-      io.write_byte(digits.byte_at((byte >> 4).to_i32))
-      io.write_byte(digits.byte_at((byte & 15_u8).to_i32))
-    end
-  end
+  count.times { yield (rng.next_u & 255_u32).to_u8 }
 end

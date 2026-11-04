@@ -799,10 +799,10 @@ local variables where `render` is written.
 ## Configuration
 
 ```ris
-import web/web/config::*
+import web/web/config::{Config}
 
-config.app_name = "storefront"
-config.max_request_body_size = 1024 * 1024
+options = Config.new("storefront")
+options.max_request_body_size = 1024 * 1024
 ```
 
 | Setting | Default | Shorthand |
@@ -986,7 +986,7 @@ written with the whole path: `github.com/domify/web/web/dsl`.
 | `web/web/headers` | `Headers` |
 | `web/web/body` | `IntoBody` |
 | `web/web/handler` | `Handler`, `chain` |
-| `web/web/config` | `Config`, `config` |
+| `web/web/config` | `Config` |
 | `web/web/cli` | `CLIParser` |
 | `web/web/event_stream` | `EventStream` |
 | `web/web/websocket` | `WebSocket`, `Frame`, `FrameError` |

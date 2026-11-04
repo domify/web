@@ -26,7 +26,7 @@ pub class EventStream
 
   # Sets the event-stream headers, sends them, then yields the stream. A
   # HEAD gets the headers and nothing else: the block does not run.
-  def self.serve(ctx : Context, &block : EventStream -> Nil) : Nil
+  def self.serve(ctx : Context, & : EventStream -> Nil) : Nil
     ctx.response.status_code = 200
     ctx.response.content_type = "text/event-stream; charset=utf-8"
     ctx.response.headers["Cache-Control"] = "no-cache"
@@ -34,30 +34,33 @@ pub class EventStream
     return if ctx.request.method == "HEAD"
     stream = EventStream.new(ctx)
     stream.flush
-    block.call(stream)
+    yield stream
+    nil
   end
 
   # *retry* tells the client how long to wait before reconnecting.
   pub def send(data : String, event : String? = nil, id : String | Int32 | Int64 | Nil = nil, retry : Span? = nil) : EventStream
     frame = ""
     if name = event
-      frame = frame + "event: " + single_line(name, "event") + "\n"
+      frame << "event: " << single_line(name, "event") << '\n'
     end
     unless id.nil?
-      frame = frame + "id: " + single_line(id.to_s, "id") + "\n"
+      frame << "id: " << single_line(id.to_s, "id") << '\n'
     end
     if wait = retry
       milliseconds = wait.total_milliseconds.to_i64
-      frame = frame + "retry: " + milliseconds.to_s + "\n" if milliseconds >= 0
+      frame << "retry: " << milliseconds << '\n' if milliseconds >= 0
     end
-    lines(data).each { |line| frame = frame + "data: " + line + "\n" }
-    emit(frame + "\n")
+    lines(data).each { |line| frame << "data: " << line << '\n' }
+    frame << '\n'
+    emit(frame)
   end
 
   pub def comment(text : String) : EventStream
     frame = ""
-    lines(text).each { |line| frame = frame + ": " + line + "\n" }
-    emit(frame + "\n")
+    lines(text).each { |line| frame << ": " << line << '\n' }
+    frame << '\n'
+    emit(frame)
   end
 
   pub def flush : Nil

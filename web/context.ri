@@ -9,6 +9,8 @@ module web/context
 import std/file::{File}
 import std/json::{JSON}
 import std/time::{Time}
+import std/socket::{IyiSocket}
+import web/websocket::{WebSocket}
 import web/request::{Request}
 import web/response::{Response}
 import web/params::{Params}
@@ -17,45 +19,63 @@ import web/headers::{Headers}
 import web/http_date::*
 import web/mime::*
 import web/range::{respond_ranged, parse_ranges}
-import web/file_body::{respond_file}
+import web/file_body::{respond_file, FileCache}
 import std/text
 
 # What `set` stores for later filters, middleware and the route.
 pub alias StoreValue = Nil | String | Int32 | Int64 | Float64 | Bool
+
+pub abstract class SocketHandler
+  pub abstract def call(socket : IyiSocket, leftover : String,
+                        context : Context, max_message_size : Int32) : Nil
+end
 
 pub class Context
   @request : Request
   @response : Response
   # Parsed when first asked for: a handler that reads its request another
   # way (a framework above with its own params) never pays for it.
-  @params : Params?
-  @url : Hash(String, String)?
-  @max_files : Int32?
-  @max_field_size : Int32
+  @params : Params
   @halted : Bool
   @store : Hash(String, StoreValue)
-  @cookies : CookieJar?
+  @cookies : CookieJar
   @route_method : String?
   @route_pattern : String?
   @max_ranges : Int32
+  @socket_handler : SocketHandler?
+  @socket_max : Int32
+  property file_cache : FileCache?
 
-  def initialize(@request : Request, @response : Response, @params : Params?, @url : Hash(String, String)? = nil)
-    @max_files = nil
-    @max_field_size = 0
+  def initialize(@request : Request, @response : Response, @params : Params)
     @halted = false
     @store = {} of String => StoreValue
-    @cookies = nil
+    @cookies = CookieJar.new(@request.headers["cookie"]? || "")
     @route_method = nil
     @route_pattern = nil
     @max_ranges = 16
+    @socket_handler = nil
+    @socket_max = 0
+    @file_cache = nil
   end
 
-  def self.for(request : Request) : Context
-    Context.new(request, Response.new, nil)
+  # The block a `ws` route gives its connection once the 101 has gone.
+  pub def socket_handler(max_message_size : Int32, handler : SocketHandler) : Nil
+    @socket_handler = handler
+    @socket_max = max_message_size
   end
 
-  def self.for(request : Request, url : Hash(String, String)) : Context
-    Context.new(request, Response.new, nil, url)
+  pub def upgrades? : Bool
+    !@socket_handler.nil? || !@response.upgrade_handler.nil?
+  end
+
+  # Hands *client* to what asked for the connection, with whatever the
+  # client sent after the request.
+  pub def take_over(client : IyiSocket, leftover : String) : Nil
+    if handler = @socket_handler
+      handler.call(client, leftover, self, @socket_max)
+    else
+      @response.take_over(client, leftover, @request)
+    end
   end
 
   pub def request : Request
@@ -67,31 +87,16 @@ pub class Context
   end
 
   pub def params : Params
-    if made = @params
-      return made
-    end
-    made = Params.from(@request, @url || {} of String => String)
-    if files = @max_files
-      made.limit_uploads(files, @max_field_size)
-    end
-    @params = made
-    made
+    @params
   end
 
-  # `Params#limit_uploads`, for the params when they are made.
+  # `Params#limit_uploads`, read when a multipart body is first parsed.
   pub def limit_uploads(max_files : Int32, max_field_size : Int32) : Nil
-    @max_files = max_files
-    @max_field_size = max_field_size
-    if made = @params
-      made.limit_uploads(max_files, max_field_size)
-    end
+    @params.limit_uploads(max_files, max_field_size)
   end
 
-  # `Params#cleanup`, when there are params to clean up after.
   pub def cleanup_params : Nil
-    if made = @params
-      made.cleanup
-    end
+    @params.cleanup
   end
 
   pub def halted? : Bool
@@ -131,17 +136,12 @@ pub class Context
   end
 
   pub def matched(method : String, pattern : String) : Nil
-    @route_method = method
-    @route_pattern = pattern
+    @route_method = keep(method)
+    @route_pattern = keep(pattern)
   end
 
   pub def cookies : CookieJar
-    current = @cookies
-    return current if current
-    header = @request.headers["cookie"]? || ""
-    jar = CookieJar.parse(header)
-    @cookies = jar
-    jar
+    @cookies
   end
 
   # The value is percent-encoded where RFC 6265 does not allow it, and
@@ -223,7 +223,7 @@ pub class Context
     size = info.size
     header = requested_range
     ranges = header ? parse_ranges(header, size, @max_ranges) : nil
-    respond_file(@response, path, size, ranges, type, @request.method == "HEAD")
+    respond_file(@response, path, size, ranges, type, @request.method == "HEAD", @file_cache)
   end
 
   # `send_file` for bytes already in memory. MIME follows *filename*'s
@@ -242,6 +242,7 @@ pub class Context
     unless filename.empty?
       @response.headers["Content-Disposition"] = content_disposition(disposition.empty? ? "attachment" : disposition, filename)
     end
+    nil
   end
 
   private def requested_range : String?
@@ -254,8 +255,13 @@ pub class Context
     @max_ranges = value
   end
 
+  # Text stored here is copied, to last as long as the context.
+  private def keep(text : String) : String
+    @response.headers.keep(text)
+  end
+
   pub def set(name : String, value : StoreValue) : Nil
-    @store[name] = value
+    @store[keep(name)] = value.is_a?(String) ? keep(value) : value
   end
 
   # Panics when nothing was stored under *name*.
@@ -269,8 +275,9 @@ pub class Context
   end
 
   pub def []=(key : String, value : String) : String
-    @store[key] = value
-    value
+    kept = keep(value)
+    @store[keep(key)] = kept
+    kept
   end
 
   # The value under *key* when it is a String.
@@ -282,6 +289,17 @@ pub class Context
   pub def [](key : String) : String
     self[key]? || raise "no string stored under #{key.inspect}"
   end
+end
+
+# Everything one request's handling needs, declared here for the length of
+# the block: the response's headers, the response and the params.
+pub def with_context(request : Request, & : Context -> Nil) : Nil
+  headers = Headers.new
+  response = Response.new(headers)
+  params = Params.new(request)
+  ctx = Context.new(request, response, params)
+  yield ctx
+  nil
 end
 
 # `attachment; filename="report.pdf"`. A name that is not printable ASCII
@@ -296,10 +314,10 @@ pub def content_disposition(disposition : String, filename : String) : String
   base.each_char do |char|
     code = char.ord
     if code >= 0x20 && code < 0x7f
-      fallback = fallback + "\\" if char == '"' || char == '\\'
-      fallback = fallback + char.to_s
+      fallback << "\\" if char == '"' || char == '\\'
+      fallback << char.to_s
     else
-      fallback = fallback + "_"
+      fallback << "_"
       lossy = true
     end
   end
@@ -311,14 +329,16 @@ end
 private def encode_rfc8187(text : String) : String
   hex = "0123456789ABCDEF"
   encoded = ""
-  bytes = text.as_tape
+  bytes = text
   index = 0
   while index < text.bytesize
     byte = bytes[index]
     if attr_char?(byte)
-      encoded = encoded + byte.unsafe_chr.to_s
+      encoded << byte.unsafe_chr.to_s
     else
-      encoded = encoded + "%" + hex[byte.to_i32 >> 4, 1] + hex[byte.to_i32 % 16, 1]
+      encoded << "%"
+      encoded << hex[byte.to_i32 >> 4, 1]
+      encoded << hex[byte.to_i32 % 16, 1]
     end
     index = index + 1
   end

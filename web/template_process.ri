@@ -1,0 +1,25 @@
+# Normalize literal macro arguments before using std's template processor.
+module web/template_process
+
+import std/eiy::{Eiy}
+
+def filename(text : String, caller : String) : String
+  value = text
+  loop do
+    prefix = value.starts_with?("::String.view(") ? "::String.view(" :
+      "String.view("
+    break unless value.starts_with?(prefix) && value.ends_with?(')')
+    value = value[prefix.bytesize, value.bytesize - prefix.bytesize - 1]
+  end
+  if value.starts_with?('"') && value.ends_with?('"')
+    value = value[1, value.bytesize - 2]
+  end
+  directory = Eiy.locate("", caller).chomp('/')
+  value.gsub("\\\"", "\"").gsub("\\\\", "\\")
+    .gsub("\#{__DIR__}", directory)
+end
+
+args = Program.args
+raise "usage: template_process CALLER TEMPLATE IO_NAME" unless args.size == 3
+path = filename(args[1], args[0])
+print Eiy.process_file(Eiy.locate(path, args[0]), args[2])

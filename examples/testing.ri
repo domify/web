@@ -11,6 +11,21 @@ module examples/testing
 import web/dsl::*
 import examples/testing/notes::*
 
-mount notes_routes
+import web/handler::{Handler}
+import web/config::{Config}
 
-run
+pub class Factory
+  def self.with_handler(data : Int32,
+                        & : Handler, Config -> Nil) : Nil
+    options = Config.new
+    notes_routes do |router|
+      application = App.new(router, options)
+      with_handler_chain(application) do |handler|
+        yield handler, options
+      end
+    end
+    nil
+  end
+end
+
+run(0, Factory, tasks: 1)

@@ -4,43 +4,130 @@ module web/override_test
 import web/override::{OverrideMethodHandler}
 import web/handler::{chain}
 import web/harness::*
+import web/router::{Router, RouteHandler}
+import web/handler::{Handler}
 import web/spec::*
 
-def override_app
-  chain([OverrideMethodHandler.new, routes { |r|
-    r.post "/item" do |env|
-      "posted"
-    end
-    r.put "/item" do |env|
-      "put"
-    end
-    r.patch "/item" do |env|
-      "patched"
-    end
-    r.delete "/item" do |env|
-      "deleted"
-    end
-  }])
-end
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
 
-describe "OverrideMethodHandler" do
-  it "leaves a POST without _method as POST" do
-    assert dispatch(override_app, form_request("POST", "/item", "name=x")).response.body == "posted"
+import web/router::{Route, SocketRoute}
+import web/radix::{Tree}
+import web/config::{Config}
+
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
   end
 
-  it "turns POST + _method=PUT into PUT" do
-    assert dispatch(override_app, form_request("POST", "/item", "_method=PUT")).response.body == "put"
-  end
-
-  it "matches _method case-insensitively" do
-    assert dispatch(override_app, form_request("POST", "/item", "_method=patch")).response.body == "patched"
-  end
-
-  it "turns POST + _method=DELETE into DELETE" do
-    assert dispatch(override_app, form_request("POST", "/item", "_method=DELETE")).response.body == "deleted"
-  end
-
-  it "does not allow GET as an override" do
-    assert dispatch(override_app, form_request("POST", "/item", "_method=GET")).response.body == "posted"
+  private def perform(env : Context)
+    "posted"
   end
 end
+
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "put"
+  end
+end
+
+class Route3 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "patched"
+  end
+end
+
+class Route4 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "deleted"
+  end
+end
+
+
+def override_app(& : Handler -> Nil) : Nil
+  router15 = Router.new("")
+  route_action_1 = Route1.new
+  router15.post("/item", route_action_1)
+  route_action_2 = Route2.new
+  router15.put("/item", route_action_2)
+  route_action_3 = Route3.new
+  router15.patch("/item", route_action_3)
+  route_action_4 = Route4.new
+  router15.delete("/item", route_action_4)
+  route_options_1 = Config.new
+  route_tree_1 = Tree(Int32).new
+  socket_tree_1 = Tree(Int32).new
+  route_handler_1 = RouteHandler.new(route_tree_1, socket_tree_1, route_options_1)
+  route_handler_1.load(router15)
+  routed15 = route_handler_1
+  yield chain([OverrideMethodHandler.new, routed15])
+end
+
+def run_suite : Nil
+  describe "OverrideMethodHandler" do
+    it "leaves a POST without _method as POST" do
+      override_app do |made171|
+        form_request("POST", "/item", "name=x") do |made172|
+          dispatch(made171, made172) do |made173|
+            assert made173.response.body == "posted"
+          end
+        end
+      end
+    end
+
+    it "turns POST + _method=PUT into PUT" do
+      override_app do |made174|
+        form_request("POST", "/item", "_method=PUT") do |made175|
+          dispatch(made174, made175) do |made176|
+            assert made176.response.body == "put"
+          end
+        end
+      end
+    end
+
+    it "matches _method case-insensitively" do
+      override_app do |made177|
+        form_request("POST", "/item", "_method=patch") do |made178|
+          dispatch(made177, made178) do |made179|
+            assert made179.response.body == "patched"
+          end
+        end
+      end
+    end
+
+    it "turns POST + _method=DELETE into DELETE" do
+      override_app do |made180|
+        form_request("POST", "/item", "_method=DELETE") do |made181|
+          dispatch(made180, made181) do |made182|
+            assert made182.response.body == "deleted"
+          end
+        end
+      end
+    end
+
+    it "does not allow GET as an override" do
+      override_app do |made183|
+        form_request("POST", "/item", "_method=GET") do |made184|
+          dispatch(made183, made184) do |made185|
+            assert made185.response.body == "posted"
+          end
+        end
+      end
+    end
+  end
+end
+
+run_suite

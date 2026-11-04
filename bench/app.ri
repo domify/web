@@ -1,49 +1,74 @@
-# The server benchmarked by bench/run.sh: a small answer and a 40 KB one,
-# and a 40 KB page rendered on the request's tape for each request, then
-# copied to the heap (`/render`) or sent from the tape (`/send`).
+# Independent factory-built handlers for the framework throughput benchmark.
 module bench/app
 
-import web/dsl::*
+import web/dsl::{run, with_handler_chain}
+import web/handler::{Handler}
+import web/router::{Router, RouteAction}
+import web/config::{Config}
+import web/context::{Context}
 
 PAGE = "<p>ris web</p>\n" * 2730
 
-get "/" do |env|
-  "Hello World!"
-end
-
-get "/page" do |env|
-  env.response.content_type = "text/html; charset=utf-8"
-  PAGE
-end
-
-ROWS = (1..1000).map { |i| "row <#{i}> & co" }
-
-# About 40 KB of rows, escaped, onto the request's tape.
-def render_rows(html : Str::Builder) : Nil
-  ROWS.each do |row|
-    html.append("<tr><td>")
-    html.append_html_escaped(row)
-    html.append("</td></tr>")
+class Hello < RouteAction
+  pub def call(context : Context) : String
+    "Hello World!"
   end
 end
 
-get "/render" do |env|
-  env.response.content_type = "text/html; charset=utf-8"
-  page = ""
-  tape do
-    html = Str::Builder.new(48_000)
-    render_rows(html)
-    page = html.finish.to_s
+class Page < RouteAction
+  pub def call(context : Context) : String
+    context.response.content_type = "text/html; charset=utf-8"
+    PAGE
   end
-  page
 end
 
-get "/send" do |env|
-  env.response.content_type = "text/html; charset=utf-8"
-  html = Str::Builder.new(48_000)
-  render_rows(html)
-  env.response.send(html.finish)
-  nil
+class Rows < RouteAction
+  def initialize(@rows : Array(String), @send : Bool)
+  end
+
+  pub def call(context : Context) : String
+    context.response.content_type = "text/html; charset=utf-8"
+    html = String::Builder.new(48_000)
+    @rows.each do |row|
+      html.append("<tr><td>")
+      html.append_html_escaped(row)
+      html.append("</td></tr>")
+    end
+    if @send
+      context.response.send(html.finish)
+      ""
+    else
+      String.new(html.finish)
+    end
+  end
 end
 
-run
+pub class Factory
+  def self.with_handler(rows : Array(String),
+                        & : Handler, Config -> Nil) : Nil
+    options = Config.new
+    router = Router.new("")
+    hello = Hello.new
+    page = Page.new
+    render = Rows.new(rows, false)
+    send = Rows.new(rows, true)
+    router.get("/", hello)
+    router.get("/page", page)
+    router.get("/render", render)
+    router.get("/send", send)
+    app = ::Web::Dsl::App.new(router, options)
+    with_handler_chain(app) { |handler| yield handler, options }
+    nil
+  end
+end
+
+rows = [] of String
+text = String::Builder.new
+index = 1
+while index <= 1000
+  at = text.bytesize
+  text << "row <" << index << "> & co"
+  rows << text.finish[at, text.bytesize - at]
+  index += 1
+end
+run(rows, Factory)

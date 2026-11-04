@@ -163,6 +163,7 @@ pub def append_vary(headers : Headers, field : String) : Nil
     return if token == "*" || token.downcase == want
   end
   headers["Vary"] = existing + ", " + field
+  nil
 end
 
 # *etag* marked as naming the *coding* form of a representation, so the
@@ -178,9 +179,41 @@ end
 # into `gzip`. An element whose qvalue is not a number in 0..1 is dropped
 # rather than read as `q=1`, and a coding listed twice keeps its lowest
 # qvalue, so a later duplicate cannot undo a refusal.
-private def parse_accept_encoding(value : String) : Hash(String, Float64)
-  codings = {} of String => Float64
+private struct EncodingPreferences
+  property gzip : Float64?
+  property deflate : Float64?
+  property identity : Float64?
+  property wildcard : Float64?
 
+  def initialize
+    @gzip = nil
+    @deflate = nil
+    @identity = nil
+    @wildcard = nil
+  end
+
+  def []?(name : String) : Float64?
+    case name
+    when "gzip" then @gzip
+    when "deflate" then @deflate
+    when "identity" then @identity
+    when "*" then @wildcard
+    else nil
+    end
+  end
+
+  def []=(name : String, value : Float64) : Nil
+    case name
+    when "gzip" then @gzip = value
+    when "deflate" then @deflate = value
+    when "identity" then @identity = value
+    when "*" then @wildcard = value
+    end
+  end
+end
+
+private def parse_accept_encoding(value : String) : EncodingPreferences
+  codings = EncodingPreferences.new
   value.split(',').each do |element|
     parts = element.partition(';')
     coding = parts[0].strip.downcase
@@ -192,7 +225,6 @@ private def parse_accept_encoding(value : String) : Hash(String, Float64)
       end
     end
   end
-
   codings
 end
 

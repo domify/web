@@ -5,31 +5,37 @@ module web/cookies
 
 import web/codec::*
 
-pub class CookieJar
+# The table's entries view text the jar keeps beside it.
+@[OnTape]
+pub struct CookieJar
   @table : Hash(String, String)
+  @text : String::Builder
 
-  def initialize(@table : Hash(String, String))
+  def initialize(header : String)
+    store = String::Builder.new(header.bytesize + 1)
+    table = {} of String => String
+    unless header.empty?
+      header.split(';').each do |part|
+        trimmed = part.strip
+        next if trimmed.empty?
+        eq = trimmed.index('=')
+        if eq
+          name = decoded_view(trimmed[0, eq].strip, store)
+          rest = trimmed.bytesize - eq - 1
+          value = decoded_view(trimmed[eq + 1, rest].strip, store)
+          table[name] = value unless name.empty?
+        else
+          name = decoded_view(trimmed, store)
+          table[name] = "" unless name.empty?
+        end
+      end
+    end
+    @table = table
+    @text = store
   end
 
   def self.parse(header : String) : CookieJar
-    table = {} of String => String
-    return CookieJar.new(table) if header.empty?
-
-    header.split(';').each do |part|
-      trimmed = part.strip
-      next if trimmed.empty?
-      eq = trimmed.index('=')
-      if eq
-        name = decode_form(trimmed[0, eq].strip)
-        value = decode_form(trimmed[eq + 1, trimmed.bytesize - eq - 1].strip)
-        table[name] = value unless name.empty?
-      else
-        name = decode_form(trimmed)
-        table[name] = "" unless name.empty?
-      end
-    end
-
-    CookieJar.new(table)
+    new(header)
   end
 
   pub def []?(name : String) : String?
@@ -56,14 +62,16 @@ end
 pub def encode_cookie_value(value : String) : String
   hex = "0123456789ABCDEF"
   encoded = ""
-  bytes = value.as_tape
+  bytes = value
   index = 0
   while index < value.bytesize
     byte = bytes[index]
     if cookie_octet?(byte)
-      encoded = encoded + byte.unsafe_chr.to_s
+      encoded << byte.unsafe_chr.to_s
     else
-      encoded = encoded + "%" + hex[byte.to_i32 >> 4, 1] + hex[byte.to_i32 % 16, 1]
+      encoded << "%"
+      encoded << hex[byte.to_i32 >> 4, 1]
+      encoded << hex[byte.to_i32 % 16, 1]
     end
     index = index + 1
   end

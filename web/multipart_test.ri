@@ -9,6 +9,13 @@ import std/text
 import web/multipart::*
 import web/spec::*
 
+def boundary_of(content_type : String) : String?
+  store = String::Builder.new(64)
+  found = multipart_boundary(content_type, store)
+  found ? found.copy_to(Program.tape) : nil
+end
+
+
 BOUNDARY = "----iyiBoundary7MA4YWxk"
 BINARY = "\u0000\r\n--not-a-boundary\r\n\r\n\xFF\xFE end\r\n"
 
@@ -24,16 +31,19 @@ def closing : String
   "--" + BOUNDARY + "--\r\n"
 end
 
-def parsed(body : String) : Multipart
-  result = parse_multipart(body, BOUNDARY, 10, 1024)
-  raise "expected a parsed body" unless result.is_a?(Multipart)
-  result
+def parsed(body : String, & : Multipart -> Nil) : Nil
+  store = String::Builder.new(256)
+  result = Multipart.new(body, BOUNDARY, 10, 1024, store)
+  raise "expected a parsed body" if result.error
+  yield result
 end
 
-def refused(body : String, max_files : Int32 = 10, max_field_size : Int32 = 1024) : MultipartError
-  result = parse_multipart(body, BOUNDARY, max_files, max_field_size)
-  raise "expected an error" unless result.is_a?(MultipartError)
-  result
+def refused(body : String, max_files : Int32 = 10, max_field_size : Int32 = 1024, & : MultipartError -> Nil) : Nil
+  store = String::Builder.new(256)
+  result = Multipart.new(body, BOUNDARY, max_files, max_field_size, store)
+  failure = result.error
+  raise "expected an error" unless failure
+  yield failure
 end
 
 def uploads_on_disk : Array(String)
@@ -42,148 +52,174 @@ end
 
 describe "multipart_boundary" do
   it "reads a bare boundary" do
-    assert multipart_boundary("multipart/form-data; boundary=abc123") == "abc123"
+    assert boundary_of("multipart/form-data; boundary=abc123") == "abc123"
   end
 
   it "reads a quoted boundary and ignores case and spacing around it" do
-    assert multipart_boundary("Multipart/Form-Data ; charset=utf-8;  Boundary=\"a b:c=d\"") == "a b:c=d"
+    assert boundary_of("Multipart/Form-Data ; charset=utf-8;  Boundary=\"a b:c=d\"") == "a b:c=d"
   end
 
   it "is nil when the type is not multipart or the parameter is absent" do
-    assert multipart_boundary("application/x-www-form-urlencoded; boundary=abc").nil?
-    assert multipart_boundary("multipart/form-data").nil?
-    assert multipart_boundary("multipart/form-data; boundary=\"\"").nil?
+    assert boundary_of("application/x-www-form-urlencoded; boundary=abc").nil?
+    assert boundary_of("multipart/form-data").nil?
+    assert boundary_of("multipart/form-data; boundary=\"\"").nil?
   end
 end
 
 describe "parse_multipart" do
   it "keeps text fields and a binary file exactly" do
     body = "preamble to ignore\r\n" + field_part("title", "Hello") + field_part("note", "line one\r\nline two") + file_part("upload", "data.bin", "application/octet-stream", BINARY) + closing
-    form = parsed(body)
+    parsed(body) do |form|
 
-    assert form.fields.size == 2
-    assert form.fields[0] == {"title", "Hello"}
-    assert form.fields[1] == {"note", "line one\r\nline two"}
+      assert form.fields.size == 2
+      assert form.fields[0] == {"title", "Hello"}
+      assert form.fields[1] == {"note", "line one\r\nline two"}
 
-    assert form.files.size == 1
-    upload = form.files[0]
-    assert upload.name == "upload"
-    assert upload.filename == "data.bin"
-    assert upload.content_type == "application/octet-stream"
-    assert upload.headers["content-disposition"].starts_with?("form-data;")
-    assert upload.size == BINARY.bytesize
-    assert upload.read == BINARY
-    assert File.read(upload.path) == BINARY
-    form.delete
+      assert form.files.size == 1
+      upload = form.files[0]
+      assert upload.name == "upload"
+      assert upload.filename == "data.bin"
+      assert upload.content_type == "application/octet-stream"
+      assert upload.headers["content-disposition"].starts_with?("form-data;")
+      assert upload.size == BINARY.bytesize
+      assert upload.read == BINARY
+      assert File.read(upload.path) == BINARY
+      form.delete
+    end
   end
 
   it "keeps repeated field names in order" do
-    form = parsed(field_part("tag", "a") + field_part("other", "x") + field_part("tag", "b") + closing)
-    assert form.fields.size == 3
-    assert form.fields[0] == {"tag", "a"}
-    assert form.fields[1] == {"other", "x"}
-    assert form.fields[2] == {"tag", "b"}
+    parsed(field_part("tag", "a") + field_part("other", "x") + field_part("tag", "b") + closing) do |form|
+      assert form.fields.size == 3
+      assert form.fields[0] == {"tag", "a"}
+      assert form.fields[1] == {"other", "x"}
+      assert form.fields[2] == {"tag", "b"}
+    end
   end
 
   it "keeps every file of a name[] field" do
-    form = parsed(file_part("photos[]", "one.txt", "text/plain", "1") + file_part("photos[]", "two.txt", "text/plain", "22") + closing)
-    assert form.files.size == 2
-    assert form.files[0].name == "photos[]"
-    assert form.files[0].read == "1"
-    assert form.files[1].filename == "two.txt"
-    assert form.files[1].read == "22"
-    form.delete
+    parsed(file_part("photos[]", "one.txt", "text/plain", "1") + file_part("photos[]", "two.txt", "text/plain", "22") + closing) do |form|
+      assert form.files.size == 2
+      assert form.files[0].name == "photos[]"
+      assert form.files[0].read == "1"
+      assert form.files[1].filename == "two.txt"
+      assert form.files[1].read == "22"
+      form.delete
+    end
   end
 
   it "treats an empty filename as a file and has no content type without the header" do
     body = "--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"blank\"; filename=\"\"\r\n\r\n\r\n" + closing
-    form = parsed(body)
-    assert form.fields.empty?
-    assert form.files.size == 1
-    assert form.files[0].filename == ""
-    assert form.files[0].content_type == ""
-    assert form.files[0].size == 0
-    form.delete
+    parsed(body) do |form|
+      assert form.fields.empty?
+      assert form.files.size == 1
+      assert form.files[0].filename == ""
+      assert form.files[0].content_type == ""
+      assert form.files[0].size == 0
+      form.delete
+    end
   end
 
   it "uses names and filenames as sent, unescaping only quoted pairs" do
     body = file_part("doc", "..\\\\evil \\\"x\\\";.txt", "text/plain", "x") + closing
-    form = parsed(body)
-    assert form.files[0].filename == "..\\evil \"x\";.txt"
-    form.delete
+    parsed(body) do |form|
+      assert form.files[0].filename == "..\\evil \"x\";.txt"
+      form.delete
+    end
   end
 
   it "parses a body read with a quoted boundary" do
-    boundary = multipart_boundary("multipart/form-data; boundary=\"" + BOUNDARY + "\"")
+    multipart_store = String::Builder.new(64)
+    boundary = boundary_of("multipart/form-data; boundary=\"" + BOUNDARY + "\"")
     raise "no boundary" unless boundary
-    result = parse_multipart(field_part("a", "1") + closing, boundary, 10, 1024)
+    result = Multipart.new(field_part("a", "1") + closing, boundary, 10, 1024, multipart_store)
     raise "expected a parsed body" unless result.is_a?(Multipart)
     assert result.fields[0] == {"a", "1"}
   end
 
   it "accepts a body with no parts as an empty form" do
-    form = parsed(closing)
-    assert form.fields.empty?
-    assert form.files.empty?
+    parsed(closing) do |form|
+      assert form.fields.empty?
+      assert form.files.empty?
+    end
   end
 
   it "refuses more file parts than allowed with 413 and leaves no temporary file" do
     before = uploads_on_disk
     body = file_part("f", "1.txt", "text/plain", "1") + file_part("f", "2.txt", "text/plain", "2") + file_part("f", "3.txt", "text/plain", "3") + closing
-    error = refused(body, 2)
-    assert error.status == 413
-    assert error.message == "Too many file parts (max 2)"
-    after = uploads_on_disk
-    assert after.size == before.size
-    after.each { |entry| assert before.includes?(entry) }
+    refused(body, 2) do |error|
+      assert error.status == 413
+      assert error.message == "Too many file parts (max 2)"
+      after = uploads_on_disk
+      assert after.size == before.size
+      after.each { |entry| assert before.includes?(entry) }
+    end
   end
 
   it "refuses every file part when the limit is zero" do
-    error = refused(file_part("f", "1.txt", "text/plain", "1") + closing, 0)
-    assert error.status == 413
-    assert parsed(field_part("a", "1") + closing).fields.size == 1
+    refused(file_part("f", "1.txt", "text/plain", "1") + closing, 0) do |error|
+      assert error.status == 413
+      parsed(field_part("a", "1") + closing) do |made9|
+        assert made9.fields.size == 1
+      end
+    end
   end
 
   it "refuses a field larger than the limit with 413 and deletes files already written" do
     before = uploads_on_disk
     body = file_part("f", "1.txt", "text/plain", "1") + field_part("big", "x" * 17) + closing
-    error = refused(body, 10, 16)
-    assert error.status == 413
-    assert uploads_on_disk.size == before.size
-    assert parsed(field_part("exact", "x" * 1024) + closing).fields[0][1].bytesize == 1024
+    refused(body, 10, 16) do |error|
+      assert error.status == 413
+      assert uploads_on_disk.size == before.size
+      parsed(field_part("exact", "x" * 1024) + closing) do |made11|
+        assert made11.fields[0][1].bytesize == 1024
+      end
+    end
   end
 
   it "refuses a body with no closing boundary with 400" do
     before = uploads_on_disk
-    error = refused(file_part("f", "1.txt", "text/plain", "1") + field_part("a", "1"))
-    assert error.status == 400
-    assert uploads_on_disk.size == before.size
+    refused(file_part("f", "1.txt", "text/plain", "1") + field_part("a", "1")) do |error|
+      assert error.status == 400
+      assert uploads_on_disk.size == before.size
+    end
   end
 
   it "refuses malformed parts with 400" do
-    assert refused("no boundary here").status == 400
+    refused("no boundary here") do |made13|
+      assert made13.status == 400
+    end
     no_name = "--" + BOUNDARY + "\r\nContent-Disposition: form-data; filename=\"a.txt\"\r\n\r\nx\r\n" + closing
-    assert refused(no_name).status == 400
+    refused(no_name) do |made14|
+      assert made14.status == 400
+    end
     no_disposition = "--" + BOUNDARY + "\r\nContent-Type: text/plain\r\n\r\nx\r\n" + closing
-    assert refused(no_disposition).status == 400
+    refused(no_disposition) do |made15|
+      assert made15.status == 400
+    end
     bad_header = "--" + BOUNDARY + "\r\nnot a header\r\n\r\nx\r\n" + closing
-    assert refused(bad_header).status == 400
+    refused(bad_header) do |made16|
+      assert made16.status == 400
+    end
     bad_padding = "--" + BOUNDARY + "junk\r\n" + field_part("a", "1") + closing
-    assert refused(bad_padding).status == 400
+    refused(bad_padding) do |made17|
+      assert made17.status == 400
+    end
   end
 end
 
 describe "FileUpload#delete" do
   it "removes the temporary file and its private directory, and can be called again" do
-    form = parsed(file_part("f", "1.txt", "text/plain", "1") + closing)
-    upload = form.files[0]
-    dir = File.dirname(upload.path)
-    assert File.exists?(upload.path)
-    assert (File.info(dir).permissions.to_i & 0o777) == 0o700
-    upload.delete
-    assert !File.exists?(upload.path)
-    assert !Dir.exists?(dir)
-    upload.delete
-    assert !File.exists?(upload.path)
+    parsed(file_part("f", "1.txt", "text/plain", "1") + closing) do |form|
+      upload = form.files[0]
+      dir = File.dirname(upload.path)
+      assert File.exists?(upload.path)
+      assert (File.info(dir).permissions.to_i & 0o777) == 0o700
+      upload.delete
+      assert !File.exists?(upload.path)
+      assert !Dir.exists?(dir)
+      upload.delete
+      assert !File.exists?(upload.path)
+    end
   end
 end

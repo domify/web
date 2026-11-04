@@ -1,12 +1,26 @@
 # Writable response: status, headers, body, and the exact bytes a socket is owed.
 module web/response_test
 
-import web/response::{Response}
+import web/response::{Response, Wire}
+import web/headers::{Headers}
 import web/spec::*
+
+# What a flushed response wrote, kept apart.
+class Recorder < Wire
+  getter writes : Array(String)
+
+  def initialize(@writes : Array(String))
+  end
+
+  pub def write(bytes : String) : Nil
+    @writes << bytes.copy_to(Program.tape)
+  end
+end
 
 describe "Response" do
   it "starts as 200 HTML with an empty body" do
-    res = Response.new
+    res_headers1 = Headers.new
+    res = Response.new(res_headers1)
     assert res.status_code == 200
     assert res.body == ""
     assert !res.closed?
@@ -14,7 +28,8 @@ describe "Response" do
   end
 
   it "concatenates print/write and replaces with set_body" do
-    res = Response.new
+    res_headers2 = Headers.new
+    res = Response.new(res_headers2)
     res.status_code = 201
     res.content_type = "application/json"
     res.print("{")
@@ -27,7 +42,8 @@ describe "Response" do
   end
 
   it "serialises status, headers, a blank line and the body" do
-    res = Response.new
+    res_headers3 = Headers.new
+    res = Response.new(res_headers3)
     res.status_code = 201
     res.content_type = "application/json"
     res.set_body("ok")
@@ -37,13 +53,15 @@ describe "Response" do
   end
 
   it "writes the default type and length when neither was set" do
-    res = Response.new
+    res_headers4 = Headers.new
+    res = Response.new(res_headers4)
     res.set_body("ok")
     assert res.to_http("HTTP/1.1") == "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 2\r\n\r\nok"
   end
 
   it "leaves an existing Content-Length alone" do
-    res = Response.new
+    res_headers5 = Headers.new
+    res = Response.new(res_headers5)
     res.headers["Content-Length"] = "99"
     res.set_body("x")
     kept = res.to_http("HTTP/1.1")
@@ -52,24 +70,28 @@ describe "Response" do
   end
 
   it "still serialises an unnamed status code" do
-    res = Response.new
+    res_headers6 = Headers.new
+    res = Response.new(res_headers6)
     res.status_code = 599
     res.set_body("")
     assert res.to_http("HTTP/1.1").starts_with?("HTTP/1.1 599 Server Error\r\n")
   end
 
   it "omits the body on HEAD and keeps the length" do
-    res = Response.new
+    res_headers7 = Headers.new
+    res = Response.new(res_headers7)
     res.set_body("ok")
     assert res.to_http("HTTP/1.1", false) == "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 2\r\n\r\n"
   end
 
   it "sends no entity body, Content-Type or Content-Length for 204 and 304" do
-    res = Response.new
+    res_headers8 = Headers.new
+    res = Response.new(res_headers8)
     res.status_code = 204
     res.set_body("nope")
     assert res.to_http("HTTP/1.1") == "HTTP/1.1 204 No Content\r\n\r\n"
-    cached = Response.new
+    cached_headers9 = Headers.new
+    cached = Response.new(cached_headers9)
     cached.status_code = 304
     cached.headers["ETag"] = "W/\"1\""
     assert cached.to_http("HTTP/1.1") == "HTTP/1.1 304 Not Modified\r\nETag: W/\"1\"\r\n\r\n"
@@ -77,8 +99,10 @@ describe "Response" do
 
   it "streams a flushed body in chunks and ends it with the last chunk" do
     writes = [] of String
-    res = Response.new
-    res.attach(->(bytes : String) { writes << bytes; nil }, "HTTP/1.1", true, false)
+    res_headers10 = Headers.new
+    res = Response.new(res_headers10)
+    recorder_res = Recorder.new(writes)
+    res.attach(recorder_res, "HTTP/1.1", true, false)
     res.print("ab")
     res.flush
     assert res.headers_sent?
@@ -97,8 +121,10 @@ describe "Response" do
 
   it "streams raw bytes when the length is known or the client speaks HTTP/1.0" do
     sized = [] of String
-    known = Response.new
-    known.attach(->(bytes : String) { sized << bytes; nil }, "HTTP/1.1", true, false)
+    known_headers11 = Headers.new
+    known = Response.new(known_headers11)
+    recorder_known = Recorder.new(sized)
+    known.attach(recorder_known, "HTTP/1.1", true, false)
     known.headers["Content-Length"] = "4"
     known.print("abcd")
     known.finish
@@ -107,8 +133,10 @@ describe "Response" do
     assert known.reusable?
 
     old = [] of String
-    legacy = Response.new
-    legacy.attach(->(bytes : String) { old << bytes; nil }, "HTTP/1.0", true, false)
+    legacy_headers12 = Headers.new
+    legacy = Response.new(legacy_headers12)
+    recorder_legacy = Recorder.new(old)
+    legacy.attach(recorder_legacy, "HTTP/1.0", true, false)
     legacy.print("x")
     legacy.finish
     assert old[0].includes?("Connection: close\r\n")
@@ -117,24 +145,28 @@ describe "Response" do
   end
 
   it "keeps buffering when nothing is attached, and sends no body for HEAD" do
-    buffered = Response.new
+    buffered_headers13 = Headers.new
+    buffered = Response.new(buffered_headers13)
     buffered.print("a")
     buffered.flush
     assert !buffered.headers_sent?
     assert buffered.body == "a"
 
     heads = [] of String
-    head = Response.new
-    head.attach(->(bytes : String) { heads << bytes; nil }, "HTTP/1.1", true, true)
+    head_headers14 = Headers.new
+    head = Response.new(head_headers14)
+    recorder_head = Recorder.new(heads)
+    head.attach(recorder_head, "HTTP/1.1", true, true)
     head.print("hidden")
     head.finish
     assert heads.size == 1
   end
 
   it "copies a sent body into the body when no server is attached" do
-    res = Response.new
+    res_headers15 = Headers.new
+    res = Response.new(res_headers15)
     tape do
-      res.send(Str.build(8) { |buf| buf.append("plain") })
+      res.send(String.build(8) { |buf| buf.append("plain") })
     end
     assert res.body == "plain"
   end

@@ -4,6 +4,7 @@ module web/intake_test
 
 import web/intake::{Intake, TooLarge}
 import web/request::{Request, ParseError}
+import web/headers::{Headers}
 import web/spec::*
 
 STEPS = [1, 2, 3, 7, 64, 4096]
@@ -12,36 +13,39 @@ STEPS = [1, 2, 3, 7, 64, 4096]
 # until it is `ready`, and answers what `take` then gives back, as the
 # server's read loop does. An intake's bytes are on the tape, as the
 # server's are.
-def feed(wire : String, step : Int32, max_body : Int32 = 1024) : Tuple(Request, String, Bool) | ParseError | TooLarge | Nil
-  result = nil.as(Tuple(Request, String, Bool) | ParseError | TooLarge | Nil)
-  tape do
-    intake = Intake.new("", max_body)
-    at = 0
-    while at < wire.bytesize && intake.ready == false
-      size = step < wire.bytesize - at ? step : wire.bytesize - at
-      intake.append(wire[at, size])
-      at = at + size
-    end
-    result = intake.take
+def feed(wire : String, step : Int32, max_body : Int32, & : Request | ParseError | TooLarge | Nil, String -> Nil) : Nil
+  headers = Headers.new
+  intake = Intake.new(max_body)
+  at = 0
+  while at < wire.bytesize && intake.ready == false
+    size = step < wire.bytesize - at ? step : wire.bytesize - at
+    intake.append(wire[at, size])
+    at = at + size
   end
-  result
+  intake.take(headers) { |got| yield got, intake.rest }
 end
 
-def taken(wire : String, step : Int32, max_body : Int32 = 1024) : Tuple(Request, String, Bool)
-  case got = feed(wire, step, max_body)
-  in Tuple(Request, String, Bool) then got
-  in ParseError                   then raise "refused: #{got.message}"
-  in TooLarge                     then raise "too large"
-  in Nil                          then raise "incomplete"
+def taken(wire : String, step : Int32, max_body : Int32 = 1024, & : Tuple(Request, String, Bool) -> Nil) : Nil
+  feed(wire, step, max_body) do |got, rest|
+    case got
+    in Request    then yield({got, rest, got.close})
+    in ParseError then raise "refused: #{got.message}"
+    in TooLarge   then raise "too large"
+    in Nil        then raise "incomplete"
+    end
   end
 end
 
 def refused?(wire : String, step : Int32, max_body : Int32 = 1024) : Bool
-  feed(wire, step, max_body).is_a?(ParseError)
+  answer = false
+  feed(wire, step, max_body) { |got, _| answer = got.is_a?(ParseError) }
+  answer
 end
 
 def too_large?(wire : String, step : Int32, max_body : Int32 = 1024) : Bool
-  feed(wire, step, max_body).is_a?(TooLarge)
+  answer = false
+  feed(wire, step, max_body) { |got, _| answer = got.is_a?(TooLarge) }
+  answer
 end
 
 NEXT = "GET /next HTTP/1.1\r\nHost: x\r\n\r\n"
@@ -49,33 +53,36 @@ NEXT = "GET /next HTTP/1.1\r\nHost: x\r\n\r\n"
 describe "Intake" do
   it "takes a request with no body as soon as its head is in, leaving the next one" do
     STEPS.each do |step|
-      got = taken("GET /a?b=c HTTP/1.1\r\nHost: x\r\n\r\n" + NEXT, step)
-      assert got[0].method == "GET"
-      assert got[0].path == "/a"
-      assert got[0].body == ""
-      # A read may have brought part of the next request; what it brought is kept.
-      assert NEXT.starts_with?(got[1])
+      taken("GET /a?b=c HTTP/1.1\r\nHost: x\r\n\r\n" + NEXT, step) do |got|
+        assert got[0].method == "GET"
+        assert got[0].path == "/a"
+        assert got[0].body == ""
+        # A read may have brought part of the next request; what it brought is kept.
+        assert NEXT.starts_with?(got[1])
+      end
     end
   end
 
   it "waits for Content-Length bytes and leaves what follows them" do
     STEPS.each do |step|
-      got = taken("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world" + NEXT, step)
-      assert got[0].body == "hello world"
-      assert NEXT.starts_with?(got[1])
+      taken("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world" + NEXT, step) do |got|
+        assert got[0].body == "hello world"
+        assert NEXT.starts_with?(got[1])
+      end
     end
-    assert feed("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello worl", 4096).nil?
+    feed("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello worl", 4096, 1024) { |got, _| assert got.nil? }
   end
 
   it "decodes a chunked body with extensions and trailers" do
     wire = "POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5;name=v\r\nhello\r\n 1 \r\n \r\nA\r\n0123456789\r\n0\r\nX-Sum: 1\r\n\r\n"
     STEPS.each do |step|
-      got = taken(wire + NEXT, step)
-      assert got[0].body == "hello 0123456789"
-      assert got[0].headers["transfer-encoding"]? == "chunked"
-      assert NEXT.starts_with?(got[1])
+      taken(wire + NEXT, step) do |got|
+        assert got[0].body == "hello 0123456789"
+        assert got[0].headers["transfer-encoding"]? == "chunked"
+        assert NEXT.starts_with?(got[1])
+      end
     end
-    assert feed(wire[0, wire.bytesize - 2], 4096).nil?
+    feed(wire[0, wire.bytesize - 2], 4096, 1024) { |got, _| assert got.nil? }
   end
 
   it "refuses a malformed chunked body" do
@@ -90,12 +97,16 @@ describe "Intake" do
 
   it "answers TooLarge before the body arrives" do
     assert too_large?("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 1025\r\n\r\n", 4096)
-    assert taken("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nabcd", 4096, 4)[0].body == "abcd"
+    taken("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nabcd", 4096, 4) do |made4|
+      assert made4[0].body == "abcd"
+    end
     chunked = "POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n"
     STEPS.each do |step|
       # The second chunk's size line passes the bound; nothing ends the body yet.
       assert too_large?(chunked, step, 4)
-      assert taken(chunked + "0\r\n\r\n", step, 5)[0].body == "abcde"
+      taken(chunked + "0\r\n\r\n", step, 5) do |made5|
+        assert made5[0].body == "abcde"
+      end
     end
   end
 
@@ -106,36 +117,41 @@ describe "Intake" do
       assert refused?("POST /e HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n", step)
       assert refused?("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n", step)
     end
-    same = taken("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\nabc", 4096)
-    assert same[0].body == "abc"
+    taken("POST /e HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\nabc", 4096) do |same|
+      assert same[0].body == "abc"
+    end
   end
 
   it "refuses a head that never ends" do
     wire = "GET / HTTP/1.1\r\nHost: x\r\nX-Filler: " + "a" * 1048576
     assert refused?(wire, 65536)
-    assert feed(wire[0, 65536], 65536).nil?
+    feed(wire[0, 65536], 65536, 1024) { |got, _| assert got.nil? }
   end
 
   it "asks for a body the client holds back for 100 Continue, once" do
     tape do
-      intake = Intake.new("", 1024)
+      intake = Intake.new(1024)
       intake.append("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n")
-      assert intake.take.nil?
+      take_headers = Headers.new
+      intake.take(take_headers) { |got| assert got.nil? }
       assert intake.continue_due?
       assert !intake.continue_due?
       intake.append("abc")
-      assert intake.take.is_a?(Tuple(Request, String, Bool))
+      intake.take(take_headers) { |got| assert got.is_a?(Request) }
 
-      old = Intake.new("POST /e HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n", 1024)
-      assert old.take.nil?
+      old = Intake.new(1024)
+      old.append("POST /e HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 3\r\n\r\n")
+      old.take(take_headers) { |got| assert got.nil? }
       assert !old.continue_due?
 
-      empty = Intake.new("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 0\r\n\r\n", 1024)
-      assert empty.take.is_a?(Tuple(Request, String, Bool))
+      empty = Intake.new(1024)
+      empty.append("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 0\r\n\r\n")
+      empty.take(take_headers) { |got| assert got.is_a?(Request) }
       assert !empty.continue_due?
 
-      refused = Intake.new("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2000\r\n\r\n", 1024)
-      assert refused.take.is_a?(TooLarge)
+      refused = Intake.new(1024)
+      refused.append("POST /e HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 2000\r\n\r\n")
+      refused.take(take_headers) { |got| assert got.is_a?(TooLarge) }
       assert !refused.continue_due?
     end
   end

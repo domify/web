@@ -5,771 +5,2339 @@ module web/router_test
 import web/router::{Router, RouteHandler}
 import web/harness::*
 import web/context::{Context}
+import web/context::{with_context}
+import web/headers::{Headers}
+import web/response::{Response}
+import web/params::{Params}
 import web/spec::*
 
-describe "Router" do
-  describe "HTTP verbs" do
-    it "dispatches GET, POST, PUT, PATCH, DELETE and OPTIONS" do
-      handler = routes do |r|
-        r.get "/" do |env|
-          "home"
-        end
-        r.post "/users" do |env|
-          "created"
-        end
-        r.put "/users/:id" do |env|
-          "put:#{env.params.url["id"]}"
-        end
-        r.patch "/users/:id" do |env|
-          "patch:#{env.params.url["id"]}"
-        end
-        r.delete "/users/:id" do |env|
-          "deleted"
-        end
-        r.options "/users" do |env|
-          env.response.headers["Allow"] = "GET, POST"
-          ""
-        end
-      end
+import web/router::{RouteAction}
+import web/context::{Context}
+import web/body::{IntoBody}
 
-      assert dispatch(handler, "GET", "/").response.body == "home"
-      assert dispatch(handler, "POST", "/users").response.body == "created"
-      assert dispatch(handler, "PUT", "/users/3").response.body == "put:3"
-      assert dispatch(handler, "PATCH", "/users/3").response.body == "patch:3"
-      assert dispatch(handler, "DELETE", "/users/3").response.body == "deleted"
+import web/router::{Route, SocketRoute}
+import web/radix::{Tree}
+import web/config::{Config}
 
-      options = dispatch(handler, "OPTIONS", "/users")
-      assert options.response.status_code == 200
-      assert options.response.headers["allow"] == "GET, POST"
-    end
+class Route1 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
 
-    it "dispatches QUERY, including a form body" do
-      handler = routes do |r|
-        r.query "/search-body" do |env|
-          q = env.params.body["q"]?
-          q ? q : "query-ok"
-        end
-      end
+  private def perform(env : Context)
+    "home"
+  end
+end
 
-      assert dispatch(handler, "QUERY", "/search-body").response.body == "query-ok"
-      form = dispatch(handler, form_request("QUERY", "/search-body", "q=iyi"))
+class Route2 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "created"
+  end
+end
+
+class Route3 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "put:#{env.params.url["id"]}"
+  end
+end
+
+class Route4 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "patch:#{env.params.url["id"]}"
+  end
+end
+
+class Route5 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "deleted"
+  end
+end
+
+class Route6 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.headers["Allow"] = "GET, POST"
+    ""
+  end
+end
+
+class Route7 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    q = env.params.body["q"]?
+    q ? q : "query-ok"
+  end
+end
+
+class Route8 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "query-ok"
+  end
+end
+
+class Route9 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.params.url["id"]
+  end
+end
+
+class Route10 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.params.url["id"]
+  end
+end
+
+class Route11 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "new-user"
+  end
+end
+
+class Route12 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    q = env.params.query["q"]?
+    q ? "q=#{q}" : "none"
+  end
+end
+
+class Route13 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.params["message"]
+  end
+end
+
+class Route14 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.params.url["path"]
+  end
+end
+
+class Route15 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.params.body["name"]
+  end
+end
+
+class Route16 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    42
+  end
+end
+
+class Route17 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    nil
+  end
+end
+
+class Route18 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    true
+  end
+end
+
+class Route19 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.text("OK")
+    nil
+  end
+end
+
+class Route20 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.status(201).json("{\"ok\":true}")
+    nil
+  end
+end
+
+class Route21 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "home"
+  end
+end
+
+class Route22 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.halt(401, "Unauthorized")
+    ""
+  end
+end
+
+class Route23 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["handler"] = "1"
+    "users"
+  end
+end
+
+class Route24 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["calls"] = "before"
+    nil
+  end
+end
+
+class Route25 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    prev = env["calls"]?
+    env["calls"] = prev ? prev + ",after" : "after"
+    nil
+  end
+end
+
+class Route26 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    prev = env["calls"]?
+    env["calls"] = prev ? prev + ",handler" : "handler"
+    "users"
+  end
+end
+
+class Route27 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "created"
+  end
+end
+
+class Route28 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    ""
+  end
+end
+
+class Route29 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "home"
+  end
+end
+
+class Route30 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "home"
+  end
+end
+
+class Route31 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.halt(401, "no")
+    ""
+  end
+end
+
+class Route32 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "secret"
+  end
+end
+
+class Route33 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.halt(403, "staff")
+    ""
+  end
+end
+
+class Route34 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "open"
+  end
+end
+
+class Route35 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "open"
+  end
+end
+
+class Route36 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.halt(400, "get-filter")
+    ""
+  end
+end
+
+class Route37 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "got"
+  end
+end
+
+class Route38 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "posted"
+  end
+end
+
+class Route39 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "base"
+  end
+end
+
+class Route40 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.print("+after")
+    nil
+  end
+end
+
+class Route41 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["a"] = "1"
+    nil
+  end
+end
+
+class Route42 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.halt(403, "no")
+    ""
+  end
+end
+
+class Route43 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["c"] = "1"
+    nil
+  end
+end
+
+class Route44 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "z"
+  end
+end
+
+class Route45 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["exact"] = "1"
+    nil
+  end
+end
+
+class Route46 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["tree"] = "1"
+    nil
+  end
+end
+
+class Route47 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "root"
+  end
+end
+
+class Route48 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "users"
+  end
+end
+
+class Route49 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["edit"] = "1"
+    nil
+  end
+end
+
+class Route50 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["files"] = "1"
+    nil
+  end
+end
+
+class Route51 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "edit"
+  end
+end
+
+class Route52 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "show"
+  end
+end
+
+class Route53 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "file"
+  end
+end
+
+class Route54 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["listed"] = "1"
+    nil
+  end
+end
+
+class Route55 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "a"
+  end
+end
+
+class Route56 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "b"
+  end
+end
+
+class Route57 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "c"
+  end
+end
+
+class Route58 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.headers["X-Seen"] = "1"
+  end
+end
+
+class Route59 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.headers["X-Get"] = "1"
+  end
+end
+
+class Route60 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.headers["X-After"] = "1"
+  end
+end
+
+class Route61 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "here"
+  end
+end
+
+class Route62 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.halt(401, "sign in")
+  end
+end
+
+class Route63 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.status_code = 423
+  end
+end
+
+class Route64 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["route"] = "ran"
+    "open"
+  end
+end
+
+class Route65 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "locked"
+  end
+end
+
+class Route66 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.route_pattern || ""
+  end
+end
+
+class Route67 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["route"] = "ran"
+    name = env.params.json["name"]?
+    name ? (name.as_s? || "") : ""
+  end
+end
+
+class Route68 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.params.limit_uploads(0, 1024)
+  end
+end
+
+class Route69 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["route"] = "ran"
+    env.params.files.size.to_s
+  end
+end
+
+class Route70 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["route"] = "ran"
+    "limited"
+  end
+end
+
+class Route71 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.redirect("/there")
+    "nope"
+  end
+end
+
+class Route72 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.halt(418, "teapot")
+    "nope"
+  end
+end
+
+class Route73 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env["after"] = "ran"
+    nil
+  end
+end
+
+class Route74 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "home"
+  end
+end
+
+class Route75 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "missing"
+  end
+end
+
+class Route76 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.status_code = 500
+    "internal"
+  end
+end
+
+class Route77 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "handled"
+  end
+end
+
+class Route78 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "login"
+  end
+end
+
+class Route79 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.status_code = 401
+    "raw"
+  end
+end
+
+class Route80 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.status_code = 410
+    "route body"
+  end
+end
+
+class Route81 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.status_code = 423
+  end
+end
+
+class Route82 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "open"
+  end
+end
+
+class Route83 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.text("no such page")
+  end
+end
+
+class Route84 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.json({"error" => "gone"})
+  end
+end
+
+class Route85 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.html("<p>locked</p>")
+  end
+end
+
+class Route86 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    env.response.status_code = 410
+    "route body"
+  end
+end
+
+class Route87 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    nil
+  end
+end
+
+class Route88 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "dash"
+  end
+end
+
+class Route89 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "pong"
+  end
+end
+
+class Route90 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "listed"
+  end
+end
+
+class Route91 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "bare"
+  end
+end
+
+class Route92 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "pong"
+  end
+end
+
+class Route93 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "bare"
+  end
+end
+
+class Route94 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "one"
+  end
+end
+
+class Route95 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "two"
+  end
+end
+
+class Route96 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "one"
+  end
+end
+
+class Route97 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "two"
+  end
+end
+
+class Route98 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "about"
+  end
+end
+
+class Route99 < RouteAction
+  pub def call(context : Context) : String
+    perform(context).into_body
+  end
+
+  private def perform(env : Context)
+    "user " + env.params.url["id"]
+  end
+end
+
+
+def router_example_1 : Nil
+  router19 = Router.new("")
+  route_action_1 = Route1.new
+  router19.get("/", route_action_1)
+  route_action_2 = Route2.new
+  router19.post("/users", route_action_2)
+  route_action_3 = Route3.new
+  router19.put("/users/:id", route_action_3)
+  route_action_4 = Route4.new
+  router19.patch("/users/:id", route_action_4)
+  route_action_5 = Route5.new
+  router19.delete("/users/:id", route_action_5)
+  route_action_6 = Route6.new
+  router19.options("/users", route_action_6)
+  route_options_1 = Config.new
+  route_tree_1 = Tree(Int32).new
+  socket_tree_1 = Tree(Int32).new
+  route_handler_1 = RouteHandler.new(route_tree_1, socket_tree_1,
+    route_options_1)
+  route_handler_1.load(router19)
+  routed19 = route_handler_1
+  handler = routed19
+
+  dispatch(handler, "GET", "/") do |made250|
+    assert made250.response.body == "home"
+  end
+  dispatch(handler, "POST", "/users") do |made251|
+    assert made251.response.body == "created"
+  end
+  dispatch(handler, "PUT", "/users/3") do |made252|
+    assert made252.response.body == "put:3"
+  end
+  dispatch(handler, "PATCH", "/users/3") do |made253|
+    assert made253.response.body == "patch:3"
+  end
+  dispatch(handler, "DELETE", "/users/3") do |made254|
+    assert made254.response.body == "deleted"
+  end
+
+  dispatch(handler, "OPTIONS", "/users") do |options|
+    assert options.response.status_code == 200
+    assert options.response.headers["allow"] == "GET, POST"
+  end
+  nil
+end
+
+def router_example_2 : Nil
+  router20 = Router.new("")
+  route_action_7 = Route7.new
+  router20.query("/search-body", route_action_7)
+  route_options_2 = Config.new
+  route_tree_2 = Tree(Int32).new
+  socket_tree_2 = Tree(Int32).new
+  route_handler_2 = RouteHandler.new(route_tree_2, socket_tree_2,
+    route_options_2)
+  route_handler_2.load(router20)
+  routed20 = route_handler_2
+  handler = routed20
+
+  dispatch(handler, "QUERY", "/search-body") do |made256|
+    assert made256.response.body == "query-ok"
+  end
+  form_request("QUERY", "/search-body", "q=iyi") do |made257|
+    dispatch(handler, made257) do |form|
       assert form.response.body == "iyi"
     end
+  end
+  nil
+end
 
-    it "rejects a QUERY body without Content-Type" do
-      handler = routes do |r|
-        r.query "/search-body" do |env|
-          "query-ok"
-        end
-      end
-      ctx = dispatch(handler, http_request("QUERY", "/search-body", "", "q=iyi"))
+def router_example_3 : Nil
+  router21 = Router.new("")
+  route_action_8 = Route8.new
+  router21.query("/search-body", route_action_8)
+  route_options_3 = Config.new
+  route_tree_3 = Tree(Int32).new
+  socket_tree_3 = Tree(Int32).new
+  route_handler_3 = RouteHandler.new(route_tree_3, socket_tree_3,
+    route_options_3)
+  route_handler_3.load(router21)
+  routed21 = route_handler_3
+  handler = routed21
+  http_request("QUERY", "/search-body", "", "q=iyi") do |made259|
+    dispatch(handler, made259) do |ctx|
       assert ctx.response.status_code == 400
       assert ctx.response.body == "400 Bad Request"
     end
   end
+  nil
+end
 
-  describe "parameters" do
-    it "captures a named url segment" do
-      handler = routes do |r|
-        r.get "/users/:id" do |env|
-          env.params.url["id"]
-        end
-      end
-      assert dispatch(handler, "GET", "/users/7").response.body == "7"
-    end
+def router_example_4 : Nil
+  router22 = Router.new("")
+  route_action_9 = Route9.new
+  router22.get("/users/:id", route_action_9)
+  route_options_4 = Config.new
+  route_tree_4 = Tree(Int32).new
+  socket_tree_4 = Tree(Int32).new
+  route_handler_4 = RouteHandler.new(route_tree_4, socket_tree_4,
+    route_options_4)
+  route_handler_4.load(router22)
+  routed22 = route_handler_4
+  handler = routed22
+  dispatch(handler, "GET", "/users/7") do |made261|
+    assert made261.response.body == "7"
+  end
+  nil
+end
 
-    it "prefers a static segment over a parameter" do
-      handler = routes do |r|
-        r.get "/users/:id" do |env|
-          env.params.url["id"]
-        end
-        r.get "/users/new" do |env|
-          "new-user"
-        end
-      end
-      assert dispatch(handler, "GET", "/users/new").response.body == "new-user"
-    end
+def router_example_5 : Nil
+  router23 = Router.new("")
+  route_action_10 = Route10.new
+  router23.get("/users/:id", route_action_10)
+  route_action_11 = Route11.new
+  router23.get("/users/new", route_action_11)
+  route_options_5 = Config.new
+  route_tree_5 = Tree(Int32).new
+  socket_tree_5 = Tree(Int32).new
+  route_handler_5 = RouteHandler.new(route_tree_5, socket_tree_5,
+    route_options_5)
+  route_handler_5.load(router23)
+  routed23 = route_handler_5
+  handler = routed23
+  dispatch(handler, "GET", "/users/new") do |made262|
+    assert made262.response.body == "new-user"
+  end
+  nil
+end
 
-    it "reads a query string" do
-      handler = routes do |r|
-        r.get "/search" do |env|
-          q = env.params.query["q"]?
-          q ? "q=#{q}" : "none"
-        end
-      end
-      ctx = dispatch(handler, http_request("GET", "/search", "q=iyi"))
+def router_example_6 : Nil
+  router24 = Router.new("")
+  route_action_12 = Route12.new
+  router24.get("/search", route_action_12)
+  route_options_6 = Config.new
+  route_tree_6 = Tree(Int32).new
+  socket_tree_6 = Tree(Int32).new
+  route_handler_6 = RouteHandler.new(route_tree_6, socket_tree_6,
+    route_options_6)
+  route_handler_6.load(router24)
+  routed24 = route_handler_6
+  handler = routed24
+  http_request("GET", "/search", "q=iyi") do |made263|
+    dispatch(handler, made263) do |ctx|
       assert ctx.response.body == "q=iyi"
     end
+  end
+  nil
+end
 
-    it "prefers a url param over a query param of the same name" do
-      handler = routes do |r|
-        r.get "/who/:message" do |env|
-          env.params["message"]
-        end
-      end
-      ctx = dispatch(handler, http_request("GET", "/who/world", "message=coco"))
+def router_example_7 : Nil
+  router25 = Router.new("")
+  route_action_13 = Route13.new
+  router25.get("/who/:message", route_action_13)
+  route_options_7 = Config.new
+  route_tree_7 = Tree(Int32).new
+  socket_tree_7 = Tree(Int32).new
+  route_handler_7 = RouteHandler.new(route_tree_7, socket_tree_7,
+    route_options_7)
+  route_handler_7.load(router25)
+  routed25 = route_handler_7
+  handler = routed25
+  http_request("GET", "/who/world", "message=coco") do |made265|
+    dispatch(handler, made265) do |ctx|
       assert ctx.response.body == "world"
     end
+  end
+  nil
+end
 
-    it "captures a glob and an empty glob tail" do
-      handler = routes do |r|
-        r.get "/files/*path" do |env|
-          env.params.url["path"]
-        end
-      end
-      assert dispatch(handler, "GET", "/files/a/b.txt").response.body == "a/b.txt"
-      assert dispatch(handler, "GET", "/files").response.body == ""
-    end
+def router_example_8 : Nil
+  router26 = Router.new("")
+  route_action_14 = Route14.new
+  router26.get("/files/*path", route_action_14)
+  route_options_8 = Config.new
+  route_tree_8 = Tree(Int32).new
+  socket_tree_8 = Tree(Int32).new
+  route_handler_8 = RouteHandler.new(route_tree_8, socket_tree_8,
+    route_options_8)
+  route_handler_8.load(router26)
+  routed26 = route_handler_8
+  handler = routed26
+  dispatch(handler, "GET", "/files/a/b.txt") do |made267|
+    assert made267.response.body == "a/b.txt"
+  end
+  dispatch(handler, "GET", "/files") do |made268|
+    assert made268.response.body == ""
+  end
+  nil
+end
 
-    it "plus-decodes a form body" do
-      handler = routes do |r|
-        r.post "/form" do |env|
-          env.params.body["name"]
-        end
-      end
-      ctx = dispatch(handler, form_request("POST", "/form", "name=hello+world"))
+def router_example_9 : Nil
+  router27 = Router.new("")
+  route_action_15 = Route15.new
+  router27.post("/form", route_action_15)
+  route_options_9 = Config.new
+  route_tree_9 = Tree(Int32).new
+  socket_tree_9 = Tree(Int32).new
+  route_handler_9 = RouteHandler.new(route_tree_9, socket_tree_9,
+    route_options_9)
+  route_handler_9.load(router27)
+  routed27 = route_handler_9
+  handler = routed27
+  form_request("POST", "/form", "name=hello+world") do |made269|
+    dispatch(handler, made269) do |ctx|
       assert ctx.response.body == "hello world"
     end
   end
+  nil
+end
 
-  describe "IntoBody" do
-    it "stringifies Int32, Nil and Bool" do
-      handler = routes do |r|
-        r.get "/count" do |env|
-          42
-        end
-        r.get "/empty" do |env|
-          nil
-        end
-        r.get "/yes" do |env|
-          true
-        end
-      end
-      assert dispatch(handler, "GET", "/count").response.body == "42"
-      assert dispatch(handler, "GET", "/empty").response.body == ""
-      assert dispatch(handler, "GET", "/yes").response.body == "true"
-    end
+def router_example_10 : Nil
+  router28 = Router.new("")
+  route_action_16 = Route16.new
+  router28.get("/count", route_action_16)
+  route_action_17 = Route17.new
+  router28.get("/empty", route_action_17)
+  route_action_18 = Route18.new
+  router28.get("/yes", route_action_18)
+  route_options_10 = Config.new
+  route_tree_10 = Tree(Int32).new
+  socket_tree_10 = Tree(Int32).new
+  route_handler_10 = RouteHandler.new(route_tree_10, socket_tree_10,
+    route_options_10)
+  route_handler_10.load(router28)
+  routed28 = route_handler_10
+  handler = routed28
+  dispatch(handler, "GET", "/count") do |made271|
+    assert made271.response.body == "42"
+  end
+  dispatch(handler, "GET", "/empty") do |made272|
+    assert made272.response.body == ""
+  end
+  dispatch(handler, "GET", "/yes") do |made273|
+    assert made273.response.body == "true"
+  end
+  nil
+end
 
-    it "keeps a body already written when the handler returns nil" do
-      handler = routes do |r|
-        r.get "/plain" do |env|
-          env.text("OK")
-          nil
-        end
-        r.get "/created" do |env|
-          env.status(201).json("{\"ok\":true}")
-          nil
-        end
-      end
+def router_example_11 : Nil
+  router29 = Router.new("")
+  route_action_19 = Route19.new
+  router29.get("/plain", route_action_19)
+  route_action_20 = Route20.new
+  router29.get("/created", route_action_20)
+  route_options_11 = Config.new
+  route_tree_11 = Tree(Int32).new
+  socket_tree_11 = Tree(Int32).new
+  route_handler_11 = RouteHandler.new(route_tree_11, socket_tree_11,
+    route_options_11)
+  route_handler_11.load(router29)
+  routed29 = route_handler_11
+  handler = routed29
 
-      plain = dispatch(handler, "GET", "/plain")
-      assert plain.response.body == "OK"
-      assert plain.response.content_type == "text/plain; charset=utf-8"
+  dispatch(handler, "GET", "/plain") do |plain|
+    assert plain.response.body == "OK"
+    assert plain.response.content_type == "text/plain; charset=utf-8"
 
-      created = dispatch(handler, "GET", "/created")
+    dispatch(handler, "GET", "/created") do |created|
       assert created.response.status_code == 201
       assert created.response.body == "{\"ok\":true}"
       assert created.response.content_type == "application/json; charset=utf-8"
     end
   end
+  nil
+end
 
-  describe "HEAD" do
-    it "serves GET with an empty body and the would-be Content-Length" do
-      handler = routes do |r|
-        r.get "/" do |env|
-          "home"
-        end
-      end
-      ctx = dispatch(handler, "HEAD", "/")
-      assert ctx.response.body == ""
-      assert ctx.response.headers["content-length"] == "4"
-      assert ctx.response.status_code == 200
-    end
-
-    it "cannot bypass before_get" do
-      handler = routes do |r|
-        r.before_get "/admin/*" do |env|
-          env.halt(401, "Unauthorized")
-          ""
-        end
-        r.get "/admin/users" do |env|
-          env["handler"] = "1"
-          "users"
-        end
-      end
-      ctx = dispatch(handler, "HEAD", "/admin/users")
-      assert ctx.response.status_code == 401
-      assert ctx.response.body == ""
-      assert ctx.response.headers["content-length"] == "12"
-      assert ctx["handler"]?.nil?
-    end
-
-    it "runs GET before, handler and after filters" do
-      handler = routes do |r|
-        r.before_get "/x" do |env|
-          env["calls"] = "before"
-          nil
-        end
-        r.after_get "/x" do |env|
-          prev = env["calls"]?
-          env["calls"] = prev ? prev + ",after" : "after"
-          nil
-        end
-        r.get "/x" do |env|
-          prev = env["calls"]?
-          env["calls"] = prev ? prev + ",handler" : "handler"
-          "users"
-        end
-      end
-      ctx = dispatch(handler, "HEAD", "/x")
-      assert ctx.response.body == ""
-      assert ctx.response.headers["content-length"] == "5"
-      assert ctx["calls"] == "before,handler,after"
-    end
+def router_example_12 : Nil
+  router30 = Router.new("")
+  route_action_21 = Route21.new
+  router30.get("/", route_action_21)
+  route_options_12 = Config.new
+  route_tree_12 = Tree(Int32).new
+  socket_tree_12 = Tree(Int32).new
+  route_handler_12 = RouteHandler.new(route_tree_12, socket_tree_12,
+    route_options_12)
+  route_handler_12.load(router30)
+  routed30 = route_handler_12
+  handler = routed30
+  dispatch(handler, "HEAD", "/") do |ctx|
+    assert ctx.response.body == ""
+    assert ctx.response.headers["content-length"] == "4"
+    assert ctx.response.status_code == 200
   end
+  nil
+end
 
-  describe "method mismatch" do
-    it "answers 405 with Allow when the path is routed for another verb" do
-      handler = routes do |r|
-        r.post "/users" do |env|
-          "created"
-        end
-        r.options "/users" do |env|
-          ""
-        end
-        r.get "/" do |env|
-          "home"
-        end
-      end
+def router_example_13 : Nil
+  router31 = Router.new("")
+  route_action_22 = Route22.new
+  router31.before_get("/admin/*", route_action_22)
+  route_action_23 = Route23.new
+  router31.get("/admin/users", route_action_23)
+  route_options_13 = Config.new
+  route_tree_13 = Tree(Int32).new
+  socket_tree_13 = Tree(Int32).new
+  route_handler_13 = RouteHandler.new(route_tree_13, socket_tree_13,
+    route_options_13)
+  route_handler_13.load(router31)
+  routed31 = route_handler_13
+  handler = routed31
+  dispatch(handler, "HEAD", "/admin/users") do |ctx|
+    assert ctx.response.status_code == 401
+    assert ctx.response.body == ""
+    assert ctx.response.headers["content-length"] == "12"
+    assert ctx["handler"]?.nil?
+  end
+  nil
+end
 
-      wrong = dispatch(handler, "GET", "/users")
-      assert wrong.response.status_code == 405
-      assert wrong.response.headers["allow"].includes?("POST")
-      assert wrong.response.headers["allow"].includes?("OPTIONS")
-      assert wrong.response.body == "405 Method Not Allowed"
+def router_example_14 : Nil
+  router32 = Router.new("")
+  route_action_24 = Route24.new
+  router32.before_get("/x", route_action_24)
+  route_action_25 = Route25.new
+  router32.after_get("/x", route_action_25)
+  route_action_26 = Route26.new
+  router32.get("/x", route_action_26)
+  route_options_14 = Config.new
+  route_tree_14 = Tree(Int32).new
+  socket_tree_14 = Tree(Int32).new
+  route_handler_14 = RouteHandler.new(route_tree_14, socket_tree_14,
+    route_options_14)
+  route_handler_14.load(router32)
+  routed32 = route_handler_14
+  handler = routed32
+  dispatch(handler, "HEAD", "/x") do |ctx|
+    assert ctx.response.body == ""
+    assert ctx.response.headers["content-length"] == "5"
+    assert ctx["calls"] == "before,handler,after"
+  end
+  nil
+end
 
-      post_root = dispatch(handler, "POST", "/")
+def router_example_15 : Nil
+  router33 = Router.new("")
+  route_action_27 = Route27.new
+  router33.post("/users", route_action_27)
+  route_action_28 = Route28.new
+  router33.options("/users", route_action_28)
+  route_action_29 = Route29.new
+  router33.get("/", route_action_29)
+  route_options_15 = Config.new
+  route_tree_15 = Tree(Int32).new
+  socket_tree_15 = Tree(Int32).new
+  route_handler_15 = RouteHandler.new(route_tree_15, socket_tree_15,
+    route_options_15)
+  route_handler_15.load(router33)
+  routed33 = route_handler_15
+  handler = routed33
+
+  dispatch(handler, "GET", "/users") do |wrong|
+    assert wrong.response.status_code == 405
+    assert wrong.response.headers["allow"].includes?("POST")
+    assert wrong.response.headers["allow"].includes?("OPTIONS")
+    assert wrong.response.body == "405 Method Not Allowed"
+
+    dispatch(handler, "POST", "/") do |post_root|
       assert post_root.response.status_code == 405
       assert post_root.response.headers["allow"] == "GET, HEAD"
     end
-
-    it "treats methods as case-sensitive" do
-      handler = routes do |r|
-        r.get "/" do |env|
-          "home"
-        end
-      end
-      ctx = dispatch(handler, "get", "/")
-      assert ctx.response.status_code == 405
-      assert ctx.response.headers["allow"] == "GET, HEAD"
-    end
   end
+  nil
+end
 
-  describe "filters" do
-    it "halts from before and skips the route" do
-      handler = routes do |r|
-        r.before "/admin" do |env|
-          env.halt(401, "no")
-          ""
-        end
-        r.get "/admin" do |env|
-          "secret"
-        end
-      end
-      ctx = dispatch(handler, "GET", "/admin")
-      assert ctx.response.status_code == 401
-      assert ctx.response.body == "no"
-    end
+def router_example_16 : Nil
+  router34 = Router.new("")
+  route_action_30 = Route30.new
+  router34.get("/", route_action_30)
+  route_options_16 = Config.new
+  route_tree_16 = Tree(Int32).new
+  socket_tree_16 = Tree(Int32).new
+  route_handler_16 = RouteHandler.new(route_tree_16, socket_tree_16,
+    route_options_16)
+  route_handler_16.load(router34)
+  routed34 = route_handler_16
+  handler = routed34
+  dispatch(handler, "get", "/") do |ctx|
+    assert ctx.response.status_code == 405
+    assert ctx.response.headers["allow"] == "GET, HEAD"
+  end
+  nil
+end
 
-    it "scopes a wildcard before to that prefix" do
-      handler = routes do |r|
-        r.before "/staff/*" do |env|
-          env.halt(403, "staff")
-          ""
-        end
-        r.get "/staff/x" do |env|
-          "open"
-        end
-        r.get "/public" do |env|
-          "open"
-        end
-      end
-      assert dispatch(handler, "GET", "/staff/x").response.status_code == 403
-      assert dispatch(handler, "GET", "/public").response.body == "open"
-    end
+def router_example_17 : Nil
+  router35 = Router.new("")
+  route_action_31 = Route31.new
+  router35.before("/admin", route_action_31)
+  route_action_32 = Route32.new
+  router35.get("/admin", route_action_32)
+  route_options_17 = Config.new
+  route_tree_17 = Tree(Int32).new
+  socket_tree_17 = Tree(Int32).new
+  route_handler_17 = RouteHandler.new(route_tree_17, socket_tree_17,
+    route_options_17)
+  route_handler_17.load(router35)
+  routed35 = route_handler_17
+  handler = routed35
+  dispatch(handler, "GET", "/admin") do |ctx|
+    assert ctx.response.status_code == 401
+    assert ctx.response.body == "no"
+  end
+  nil
+end
 
-    it "runs before_get only for GET" do
-      handler = routes do |r|
-        r.before_get "/only-get" do |env|
-          env.halt(400, "get-filter")
-          ""
-        end
-        r.get "/only-get" do |env|
-          "got"
-        end
-        r.post "/only-get" do |env|
-          "posted"
-        end
-      end
-      assert dispatch(handler, "GET", "/only-get").response.status_code == 400
-      assert dispatch(handler, "POST", "/only-get").response.body == "posted"
-    end
+def router_example_18 : Nil
+  router36 = Router.new("")
+  route_action_33 = Route33.new
+  router36.before("/staff/*", route_action_33)
+  route_action_34 = Route34.new
+  router36.get("/staff/x", route_action_34)
+  route_action_35 = Route35.new
+  router36.get("/public", route_action_35)
+  route_options_18 = Config.new
+  route_tree_18 = Tree(Int32).new
+  socket_tree_18 = Tree(Int32).new
+  route_handler_18 = RouteHandler.new(route_tree_18, socket_tree_18,
+    route_options_18)
+  route_handler_18.load(router36)
+  routed36 = route_handler_18
+  handler = routed36
+  dispatch(handler, "GET", "/staff/x") do |made283|
+    assert made283.response.status_code == 403
+  end
+  dispatch(handler, "GET", "/public") do |made284|
+    assert made284.response.body == "open"
+  end
+  nil
+end
 
-    it "lets an after filter append to the body" do
-      handler = routes do |r|
-        r.get "/tagged" do |env|
-          "base"
-        end
-        r.after "/tagged" do |env|
-          env.response.print("+after")
-          nil
-        end
-      end
-      assert dispatch(handler, "GET", "/tagged").response.body == "base+after"
-    end
+def router_example_19 : Nil
+  router37 = Router.new("")
+  route_action_36 = Route36.new
+  router37.before_get("/only-get", route_action_36)
+  route_action_37 = Route37.new
+  router37.get("/only-get", route_action_37)
+  route_action_38 = Route38.new
+  router37.post("/only-get", route_action_38)
+  route_options_19 = Config.new
+  route_tree_19 = Tree(Int32).new
+  socket_tree_19 = Tree(Int32).new
+  route_handler_19 = RouteHandler.new(route_tree_19, socket_tree_19,
+    route_options_19)
+  route_handler_19.load(router37)
+  routed37 = route_handler_19
+  handler = routed37
+  dispatch(handler, "GET", "/only-get") do |made285|
+    assert made285.response.status_code == 400
+  end
+  dispatch(handler, "POST", "/only-get") do |made286|
+    assert made286.response.body == "posted"
+  end
+  nil
+end
 
-    it "stops the before chain at the first halt" do
-      handler = routes do |r|
-        r.before "*" do |env|
-          env["a"] = "1"
-          nil
-        end
-        r.before "*" do |env|
-          env.halt(403, "no")
-          ""
-        end
-        r.before "*" do |env|
-          env["c"] = "1"
-          nil
-        end
-        r.get "/z" do |env|
-          "z"
-        end
-      end
-      ctx = dispatch(handler, "GET", "/z")
-      assert ctx.response.status_code == 403
-      assert ctx["a"] == "1"
-      assert ctx["c"]?.nil?
-      assert ctx.response.body == "no"
-    end
+def router_example_20 : Nil
+  router38 = Router.new("")
+  route_action_39 = Route39.new
+  router38.get("/tagged", route_action_39)
+  route_action_40 = Route40.new
+  router38.after("/tagged", route_action_40)
+  route_options_20 = Config.new
+  route_tree_20 = Tree(Int32).new
+  socket_tree_20 = Tree(Int32).new
+  route_handler_20 = RouteHandler.new(route_tree_20, socket_tree_20,
+    route_options_20)
+  route_handler_20.load(router38)
+  routed38 = route_handler_20
+  handler = routed38
+  dispatch(handler, "GET", "/tagged") do |made287|
+    assert made287.response.body == "base+after"
+  end
+  nil
+end
 
-    it "matches a plain filter path exactly and a /* path by prefix" do
-      handler = routes do |r|
-        r.before "/admin" do |env|
-          env["exact"] = "1"
-          nil
-        end
-        r.before "/admin/*" do |env|
-          env["tree"] = "1"
-          nil
-        end
-        r.get "/admin" do |env|
-          "root"
-        end
-        r.get "/admin/users" do |env|
-          "users"
-        end
-      end
-      root = dispatch(handler, "GET", "/admin")
-      assert root["exact"]? == "1"
-      assert root["tree"]? == "1"
-      below = dispatch(handler, "GET", "/admin/users")
+def router_example_21 : Nil
+  router39 = Router.new("")
+  route_action_41 = Route41.new
+  router39.before("*", route_action_41)
+  route_action_42 = Route42.new
+  router39.before("*", route_action_42)
+  route_action_43 = Route43.new
+  router39.before("*", route_action_43)
+  route_action_44 = Route44.new
+  router39.get("/z", route_action_44)
+  route_options_21 = Config.new
+  route_tree_21 = Tree(Int32).new
+  socket_tree_21 = Tree(Int32).new
+  route_handler_21 = RouteHandler.new(route_tree_21, socket_tree_21,
+    route_options_21)
+  route_handler_21.load(router39)
+  routed39 = route_handler_21
+  handler = routed39
+  dispatch(handler, "GET", "/z") do |ctx|
+    assert ctx.response.status_code == 403
+    assert ctx["a"] == "1"
+    assert ctx["c"]?.nil?
+    assert ctx.response.body == "no"
+  end
+  nil
+end
+
+def router_example_22 : Nil
+  router40 = Router.new("")
+  route_action_45 = Route45.new
+  router40.before("/admin", route_action_45)
+  route_action_46 = Route46.new
+  router40.before("/admin/*", route_action_46)
+  route_action_47 = Route47.new
+  router40.get("/admin", route_action_47)
+  route_action_48 = Route48.new
+  router40.get("/admin/users", route_action_48)
+  route_options_22 = Config.new
+  route_tree_22 = Tree(Int32).new
+  socket_tree_22 = Tree(Int32).new
+  route_handler_22 = RouteHandler.new(route_tree_22, socket_tree_22,
+    route_options_22)
+  route_handler_22.load(router40)
+  routed40 = route_handler_22
+  handler = routed40
+  dispatch(handler, "GET", "/admin") do |root|
+    assert root["exact"]? == "1"
+    assert root["tree"]? == "1"
+    dispatch(handler, "GET", "/admin/users") do |below|
       assert below["exact"]?.nil?
       assert below["tree"]? == "1"
     end
+  end
+  nil
+end
 
-    it "matches :param and *glob segments in a filter path" do
-      handler = routes do |r|
-        r.before "/users/:id/edit" do |env|
-          env["edit"] = "1"
-          nil
-        end
-        r.before "/files/*rest" do |env|
-          env["files"] = "1"
-          nil
-        end
-        r.get "/users/:id/edit" do |env|
-          "edit"
-        end
-        r.get "/users/:id" do |env|
-          "show"
-        end
-        r.get "/files/*path" do |env|
-          "file"
-        end
-      end
-      assert dispatch(handler, "GET", "/users/9/edit")["edit"]? == "1"
-      assert dispatch(handler, "GET", "/users/9")["edit"]?.nil?
-      assert dispatch(handler, "GET", "/files/a/b")["files"]? == "1"
-    end
+def router_example_23 : Nil
+  router41 = Router.new("")
+  route_action_49 = Route49.new
+  router41.before("/users/:id/edit", route_action_49)
+  route_action_50 = Route50.new
+  router41.before("/files/*rest", route_action_50)
+  route_action_51 = Route51.new
+  router41.get("/users/:id/edit", route_action_51)
+  route_action_52 = Route52.new
+  router41.get("/users/:id", route_action_52)
+  route_action_53 = Route53.new
+  router41.get("/files/*path", route_action_53)
+  route_options_23 = Config.new
+  route_tree_23 = Tree(Int32).new
+  socket_tree_23 = Tree(Int32).new
+  route_handler_23 = RouteHandler.new(route_tree_23, socket_tree_23,
+    route_options_23)
+  route_handler_23.load(router41)
+  routed41 = route_handler_23
+  handler = routed41
+  dispatch(handler, "GET", "/users/9/edit") do |made291|
+    assert made291["edit"]? == "1"
+  end
+  dispatch(handler, "GET", "/users/9") do |made292|
+    assert made292["edit"]?.nil?
+  end
+  dispatch(handler, "GET", "/files/a/b") do |made293|
+    assert made293["files"]? == "1"
+  end
+  nil
+end
 
-    it "registers one block for a list of paths" do
-      handler = routes do |r|
-        r.before_get ["/a", "/b"] do |env|
-          env["listed"] = "1"
-          nil
-        end
-        r.get "/a" do |env|
-          "a"
-        end
-        r.get "/b" do |env|
-          "b"
-        end
-        r.get "/c" do |env|
-          "c"
-        end
-      end
-      assert dispatch(handler, "GET", "/a")["listed"]? == "1"
-      assert dispatch(handler, "GET", "/b")["listed"]? == "1"
-      assert dispatch(handler, "GET", "/c")["listed"]?.nil?
-    end
+def router_example_24 : Nil
+  router42 = Router.new("")
+  route_action_54 = Route54.new
+  router42.before_get(["/a", "/b"], route_action_54)
+  route_action_55 = Route55.new
+  router42.get("/a", route_action_55)
+  route_action_56 = Route56.new
+  router42.get("/b", route_action_56)
+  route_action_57 = Route57.new
+  router42.get("/c", route_action_57)
+  route_options_24 = Config.new
+  route_tree_24 = Tree(Int32).new
+  socket_tree_24 = Tree(Int32).new
+  route_handler_24 = RouteHandler.new(route_tree_24, socket_tree_24,
+    route_options_24)
+  route_handler_24.load(router42)
+  routed42 = route_handler_24
+  handler = routed42
+  dispatch(handler, "GET", "/a") do |made294|
+    assert made294["listed"]? == "1"
+  end
+  dispatch(handler, "GET", "/b") do |made295|
+    assert made295["listed"]? == "1"
+  end
+  dispatch(handler, "GET", "/c") do |made296|
+    assert made296["listed"]?.nil?
+  end
+  nil
+end
 
-    it "runs before_all, and only before_all, for a request no route matched" do
-      handler = routes do |r|
-        r.before "*" do |env|
-          env.response.headers["X-Seen"] = "1"
-        end
-        r.before_get "*" do |env|
-          env.response.headers["X-Get"] = "1"
-        end
-        r.after "*" do |env|
-          env.response.headers["X-After"] = "1"
-        end
-        r.get "/here" do |env|
-          "here"
-        end
-      end
-      missing = dispatch(handler, "GET", "/nowhere")
-      assert missing.response.status_code == 404
-      assert missing.response.headers["x-seen"]? == "1"
-      assert missing.response.headers["x-get"]?.nil?
-      assert missing.response.headers["x-after"]?.nil?
-      assert !missing.route_found?
+def router_example_25 : Nil
+  router43 = Router.new("")
+  route_action_58 = Route58.new
+  router43.before("*", route_action_58)
+  route_action_59 = Route59.new
+  router43.before_get("*", route_action_59)
+  route_action_60 = Route60.new
+  router43.after("*", route_action_60)
+  route_action_61 = Route61.new
+  router43.get("/here", route_action_61)
+  route_options_25 = Config.new
+  route_tree_25 = Tree(Int32).new
+  socket_tree_25 = Tree(Int32).new
+  route_handler_25 = RouteHandler.new(route_tree_25, socket_tree_25,
+    route_options_25)
+  route_handler_25.load(router43)
+  routed43 = route_handler_25
+  handler = routed43
+  dispatch(handler, "GET", "/nowhere") do |missing|
+    assert missing.response.status_code == 404
+    assert missing.response.headers["x-seen"]? == "1"
+    assert missing.response.headers["x-get"]?.nil?
+    assert missing.response.headers["x-after"]?.nil?
+    assert !missing.route_found?
 
-      wrong = dispatch(handler, "POST", "/here")
+    dispatch(handler, "POST", "/here") do |wrong|
       assert wrong.response.status_code == 405
       assert wrong.response.headers["x-seen"]? == "1"
     end
+  end
+  nil
+end
 
-    it "lets before_all turn a 404 away first" do
-      handler = routes do |r|
-        r.before "*" do |env|
-          env.halt(401, "sign in")
-        end
-      end
-      ctx = dispatch(handler, "GET", "/nowhere")
-      assert ctx.response.status_code == 401
-      assert ctx.response.body == "sign in"
-    end
+def router_example_26 : Nil
+  router44 = Router.new("")
+  route_action_62 = Route62.new
+  router44.before("*", route_action_62)
+  route_options_26 = Config.new
+  route_tree_26 = Tree(Int32).new
+  socket_tree_26 = Tree(Int32).new
+  route_handler_26 = RouteHandler.new(route_tree_26, socket_tree_26,
+    route_options_26)
+  route_handler_26.load(router44)
+  routed44 = route_handler_26
+  handler = routed44
+  dispatch(handler, "GET", "/nowhere") do |ctx|
+    assert ctx.response.status_code == 401
+    assert ctx.response.body == "sign in"
+  end
+  nil
+end
 
-    it "renders the error page for a status a before filter leaves" do
-      handler = routes do |r|
-        r.before "/locked" do |env|
-          env.response.status_code = 423
-        end
-        r.get "/locked" do |env|
-          env["route"] = "ran"
-          "open"
-        end
-        r.error 423 do |env|
-          "locked"
-        end
-      end
-      ctx = dispatch(handler, "GET", "/locked")
-      assert ctx.response.status_code == 423
-      assert ctx.response.body == "locked"
-      assert ctx["route"]?.nil?
-    end
+def router_example_27 : Nil
+  router45 = Router.new("")
+  route_action_63 = Route63.new
+  router45.before("/locked", route_action_63)
+  route_action_64 = Route64.new
+  router45.get("/locked", route_action_64)
+  route_action_65 = Route65.new
+  router45.error(423, route_action_65)
+  route_options_27 = Config.new
+  route_tree_27 = Tree(Int32).new
+  socket_tree_27 = Tree(Int32).new
+  route_handler_27 = RouteHandler.new(route_tree_27, socket_tree_27,
+    route_options_27)
+  route_handler_27.load(router45)
+  routed45 = route_handler_27
+  handler = routed45
+  dispatch(handler, "GET", "/locked") do |ctx|
+    assert ctx.response.status_code == 423
+    assert ctx.response.body == "locked"
+    assert ctx["route"]?.nil?
+  end
+  nil
+end
 
-    it "records the matched route" do
-      handler = routes do |r|
-        r.get "/users/:id" do |env|
-          env.route_pattern || ""
-        end
-      end
-      ctx = dispatch(handler, "GET", "/users/3")
-      assert ctx.route_found?
-      assert ctx.route_method == "GET"
-      assert ctx.response.body == "/users/:id"
-    end
+def router_example_28 : Nil
+  router46 = Router.new("")
+  route_action_66 = Route66.new
+  router46.get("/users/:id", route_action_66)
+  route_options_28 = Config.new
+  route_tree_28 = Tree(Int32).new
+  socket_tree_28 = Tree(Int32).new
+  route_handler_28 = RouteHandler.new(route_tree_28, socket_tree_28,
+    route_options_28)
+  route_handler_28.load(router46)
+  routed46 = route_handler_28
+  handler = routed46
+  dispatch(handler, "GET", "/users/3") do |ctx|
+    assert ctx.route_found?
+    assert ctx.route_method == "GET"
+    assert ctx.response.body == "/users/:id"
+  end
+  nil
+end
 
-    it "answers 400 before the route when a declared JSON body does not parse" do
-      handler = routes do |r|
-        r.post "/items" do |env|
-          env["route"] = "ran"
-          name = env.params.json["name"]?
-          name ? (name.as_s? || "") : ""
-        end
-      end
-      broken = dispatch(handler, http_request("POST", "/items", "", "{\"name\":", "application/json"))
+def router_example_29 : Nil
+  router47 = Router.new("")
+  route_action_67 = Route67.new
+  router47.post("/items", route_action_67)
+  route_options_29 = Config.new
+  route_tree_29 = Tree(Int32).new
+  socket_tree_29 = Tree(Int32).new
+  route_handler_29 = RouteHandler.new(route_tree_29, socket_tree_29,
+    route_options_29)
+  route_handler_29.load(router47)
+  routed47 = route_handler_29
+  handler = routed47
+  http_request("POST", "/items", "", "{\"name\":",
+    "application/json") do |made302|
+    dispatch(handler, made302) do |broken|
       assert broken.response.status_code == 400
       assert broken["route"]?.nil?
-      ok = dispatch(handler, http_request("POST", "/items", "", %({"name":"ada"}), "application/json"))
-      assert ok.response.status_code == 200
-      assert ok.response.body == "ada"
-    end
-  end
-
-  describe "uploads" do
-    it "answers a malformed multipart body with 400 and a breached limit with 413" do
-      handler = routes do |r|
-        r.before "/limited" do |env|
-          env.params.limit_uploads(0, 1024)
-        end
-        r.post "/upload" do |env|
-          env["route"] = "ran"
-          env.params.files.size.to_s
-        end
-        r.post "/limited" do |env|
-          env["route"] = "ran"
-          "limited"
+      http_request("POST", "/items", "", %({"name":"ada"}),
+        "application/json") do |made304|
+        dispatch(handler, made304) do |ok|
+          assert ok.response.status_code == 200
+          assert ok.response.body == "ada"
         end
       end
-      broken = dispatch(handler, http_request("POST", "/upload", "", "--XyZ\r\nno headers", "multipart/form-data; boundary=XyZ"))
+    end
+  end
+  nil
+end
+
+def router_example_30 : Nil
+  router48 = Router.new("")
+  route_action_68 = Route68.new
+  router48.before("/limited", route_action_68)
+  route_action_69 = Route69.new
+  router48.post("/upload", route_action_69)
+  route_action_70 = Route70.new
+  router48.post("/limited", route_action_70)
+  route_options_30 = Config.new
+  route_tree_30 = Tree(Int32).new
+  socket_tree_30 = Tree(Int32).new
+  route_handler_30 = RouteHandler.new(route_tree_30, socket_tree_30,
+    route_options_30)
+  route_handler_30.load(router48)
+  routed48 = route_handler_30
+  handler = routed48
+  http_request("POST", "/upload", "", "--XyZ\r\nno headers",
+    "multipart/form-data; boundary=XyZ") do |made306|
+    dispatch(handler, made306) do |broken|
       assert broken.response.status_code == 400
       assert broken["route"]?.nil?
 
-      one = "--XyZ\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\nx\r\n--XyZ--\r\n"
-      ok = dispatch(handler, http_request("POST", "/upload", "", one, "multipart/form-data; boundary=XyZ"))
-      assert ok.response.body == "1"
-      ok.params.cleanup
+      one = "--XyZ\r\nContent-Disposition: form-data; " +
+        "name=\"f\"; filename=\"x\"\r\n\r\nx\r\n--XyZ--\r\n"
+      http_request("POST", "/upload", "", one,
+        "multipart/form-data; boundary=XyZ") do |made308|
+        dispatch(handler, made308) do |ok|
+          assert ok.response.body == "1"
+          ok.params.cleanup
 
-      refused = dispatch(handler, http_request("POST", "/limited", "", one, "multipart/form-data; boundary=XyZ"))
-      assert refused.response.status_code == 413
-      assert refused.response.body == "413 Content Too Large"
-      assert refused["route"]?.nil?
-    end
-  end
-
-  describe "halt and redirect" do
-    it "redirects without writing the handler's return value" do
-      handler = routes do |r|
-        r.get "/go" do |env|
-          env.redirect("/there")
-          "nope"
-        end
-      end
-      ctx = dispatch(handler, "GET", "/go")
-      assert ctx.response.status_code == 302
-      assert ctx.response.headers["location"] == "/there"
-      assert ctx.response.body == ""
-    end
-
-    it "halts without running after filters" do
-      handler = routes do |r|
-        r.get "/stop" do |env|
-          env.halt(418, "teapot")
-          "nope"
-        end
-        r.after "/stop" do |env|
-          env["after"] = "ran"
-          nil
-        end
-      end
-      ctx = dispatch(handler, "GET", "/stop")
-      assert ctx.response.status_code == 418
-      assert ctx.response.body == "teapot"
-      assert ctx["after"]?.nil?
-    end
-
-    it "leaves an already-halted context alone" do
-      handler = routes do |r|
-        r.get "/" do |env|
-          "home"
-        end
-      end
-      ctx = Context.for(http_request("GET", "/"))
-      ctx.halt(499, "pre")
-      handler.call(ctx)
-      assert ctx.response.status_code == 499
-      assert ctx.response.body == "pre"
-    end
-  end
-
-  describe "error handlers" do
-    it "uses a custom 404 body" do
-      handler = routes do |r|
-        r.error 404 do |env|
-          "missing"
-        end
-      end
-      ctx = dispatch(handler, "GET", "/nope")
-      assert ctx.response.status_code == 404
-      assert ctx.response.body == "missing"
-    end
-
-    it "rewrites the body when the handler sets a status the error table names" do
-      handler = routes do |r|
-        r.get "/boom" do |env|
-          env.response.status_code = 500
-          "internal"
-        end
-        r.error 500 do |env|
-          "handled"
-        end
-      end
-      ctx = dispatch(handler, "GET", "/boom")
-      assert ctx.response.status_code == 500
-      assert ctx.response.body == "handled"
-    end
-
-    it "collects error handlers from a mounted router" do
-      auth = Router.new
-      auth.error 401 do |env|
-        "login"
-      end
-      auth.get "/x" do |env|
-        env.response.status_code = 401
-        "raw"
-      end
-      root = Router.new
-      root.mount "/n", auth
-      ctx = dispatch(RouteHandler.new(root), "GET", "/n/x")
-      assert ctx.response.status_code == 401
-      assert ctx.response.body == "login"
-    end
-
-    it "keeps a page an error handler writes with a helper, in place of the route's body" do
-      handler = routes do |r|
-        r.get "/gone" do |env|
-          env.response.status_code = 410
-          "route body"
-        end
-        r.before "/locked" do |env|
-          env.response.status_code = 423
-        end
-        r.get "/locked" do |env|
-          "open"
-        end
-        r.error 404 do |env|
-          env.text("no such page")
-        end
-        r.error 410 do |env|
-          env.json({"error" => "gone"})
-        end
-        r.error 423 do |env|
-          env.html("<p>locked</p>")
-        end
-      end
-      missing = dispatch(handler, "GET", "/nope")
-      assert missing.response.status_code == 404
-      assert missing.response.body == "no such page"
-      assert missing.response.content_type == "text/plain; charset=utf-8"
-      gone = dispatch(handler, "GET", "/gone")
-      assert gone.response.status_code == 410
-      assert gone.response.body == "{\"error\":\"gone\"}"
-      locked = dispatch(handler, "GET", "/locked")
-      assert locked.response.body == "<p>locked</p>"
-    end
-
-    it "sends an empty page when an error handler answers nil and writes nothing" do
-      handler = routes do |r|
-        r.get "/gone" do |env|
-          env.response.status_code = 410
-          "route body"
-        end
-        r.error 410 do |env|
-          nil
-        end
-      end
-      assert dispatch(handler, "GET", "/gone").response.body == ""
-    end
-  end
-
-  describe "namespace and mount" do
-    it "prefixes nested namespaces" do
-      handler = routes do |r|
-        r.namespace "/ns" do |ns|
-          ns.get "/dash" do |env|
-            "dash"
-          end
-        end
-        r.namespace "/api" do |api|
-          api.namespace "/v1" do |v1|
-            v1.get "/ping" do |env|
-              "pong"
+          http_request("POST", "/limited", "", one,
+            "multipart/form-data; boundary=XyZ") do |made310|
+            dispatch(handler, made310) do |refused|
+              assert refused.response.status_code == 413
+              assert refused.response.body == "413 Content Too Large"
+              assert refused["route"]?.nil?
             end
           end
         end
       end
-      assert dispatch(handler, "GET", "/ns/dash").response.body == "dash"
-      assert dispatch(handler, "GET", "/api/v1/ping").response.body == "pong"
+    end
+  end
+  nil
+end
+
+def router_example_31 : Nil
+  router49 = Router.new("")
+  route_action_71 = Route71.new
+  router49.get("/go", route_action_71)
+  route_options_31 = Config.new
+  route_tree_31 = Tree(Int32).new
+  socket_tree_31 = Tree(Int32).new
+  route_handler_31 = RouteHandler.new(route_tree_31, socket_tree_31,
+    route_options_31)
+  route_handler_31.load(router49)
+  routed49 = route_handler_31
+  handler = routed49
+  dispatch(handler, "GET", "/go") do |ctx|
+    assert ctx.response.status_code == 302
+    assert ctx.response.headers["location"] == "/there"
+    assert ctx.response.body == ""
+  end
+  nil
+end
+
+def router_example_32 : Nil
+  router50 = Router.new("")
+  route_action_72 = Route72.new
+  router50.get("/stop", route_action_72)
+  route_action_73 = Route73.new
+  router50.after("/stop", route_action_73)
+  route_options_32 = Config.new
+  route_tree_32 = Tree(Int32).new
+  socket_tree_32 = Tree(Int32).new
+  route_handler_32 = RouteHandler.new(route_tree_32, socket_tree_32,
+    route_options_32)
+  route_handler_32.load(router50)
+  routed50 = route_handler_32
+  handler = routed50
+  dispatch(handler, "GET", "/stop") do |ctx|
+    assert ctx.response.status_code == 418
+    assert ctx.response.body == "teapot"
+    assert ctx["after"]?.nil?
+  end
+  nil
+end
+
+def router_example_33 : Nil
+  router51 = Router.new("")
+  route_action_74 = Route74.new
+  router51.get("/", route_action_74)
+  route_options_33 = Config.new
+  route_tree_33 = Tree(Int32).new
+  socket_tree_33 = Tree(Int32).new
+  route_handler_33 = RouteHandler.new(route_tree_33, socket_tree_33,
+    route_options_33)
+  route_handler_33.load(router51)
+  routed51 = route_handler_33
+  handler = routed51
+  http_request("GET", "/") do |made314|
+    headers = Headers.new
+    response = Response.new(headers)
+    params = Params.new(made314)
+    ctx = Context.new(made314, response, params)
+    ctx.halt(499, "pre")
+    handler.call(ctx)
+    assert ctx.response.status_code == 499
+    assert ctx.response.body == "pre"
+  end
+  nil
+end
+
+def router_example_34 : Nil
+  router52 = Router.new("")
+  route_action_75 = Route75.new
+  router52.error(404, route_action_75)
+  route_options_34 = Config.new
+  route_tree_34 = Tree(Int32).new
+  socket_tree_34 = Tree(Int32).new
+  route_handler_34 = RouteHandler.new(route_tree_34, socket_tree_34,
+    route_options_34)
+  route_handler_34.load(router52)
+  routed52 = route_handler_34
+  handler = routed52
+  dispatch(handler, "GET", "/nope") do |ctx|
+    assert ctx.response.status_code == 404
+    assert ctx.response.body == "missing"
+  end
+  nil
+end
+
+def router_example_35 : Nil
+  router53 = Router.new("")
+  route_action_76 = Route76.new
+  router53.get("/boom", route_action_76)
+  route_action_77 = Route77.new
+  router53.error(500, route_action_77)
+  route_options_35 = Config.new
+  route_tree_35 = Tree(Int32).new
+  socket_tree_35 = Tree(Int32).new
+  route_handler_35 = RouteHandler.new(route_tree_35, socket_tree_35,
+    route_options_35)
+  route_handler_35.load(router53)
+  routed53 = route_handler_35
+  handler = routed53
+  dispatch(handler, "GET", "/boom") do |ctx|
+    assert ctx.response.status_code == 500
+    assert ctx.response.body == "handled"
+  end
+  nil
+end
+
+def router_example_36 : Nil
+  auth = Router.new("")
+  route_action_78 = Route78.new
+  auth.error(401, route_action_78)
+  route_action_79 = Route79.new
+  auth.get("/x", route_action_79)
+  root = Router.new("")
+  root.mount "/n", auth
+  route_options_36 = Config.new
+  route_tree_36 = Tree(Int32).new
+  socket_tree_36 = Tree(Int32).new
+  route_handler_36 = RouteHandler.new(route_tree_36, socket_tree_36,
+    route_options_36)
+  route_handler_36.load(root)
+  routed_root = route_handler_36
+  dispatch(routed_root, "GET", "/n/x") do |ctx|
+    assert ctx.response.status_code == 401
+    assert ctx.response.body == "login"
+  end
+  nil
+end
+
+def router_example_37 : Nil
+  router54 = Router.new("")
+  route_action_80 = Route80.new
+  router54.get("/gone", route_action_80)
+  route_action_81 = Route81.new
+  router54.before("/locked", route_action_81)
+  route_action_82 = Route82.new
+  router54.get("/locked", route_action_82)
+  route_action_83 = Route83.new
+  router54.error(404, route_action_83)
+  route_action_84 = Route84.new
+  router54.error(410, route_action_84)
+  route_action_85 = Route85.new
+  router54.error(423, route_action_85)
+  route_options_37 = Config.new
+  route_tree_37 = Tree(Int32).new
+  socket_tree_37 = Tree(Int32).new
+  route_handler_37 = RouteHandler.new(route_tree_37, socket_tree_37,
+    route_options_37)
+  route_handler_37.load(router54)
+  routed54 = route_handler_37
+  handler = routed54
+  dispatch(handler, "GET", "/nope") do |missing|
+    assert missing.response.status_code == 404
+    assert missing.response.body == "no such page"
+    assert missing.response.content_type == "text/plain; charset=utf-8"
+    dispatch(handler, "GET", "/gone") do |gone|
+      assert gone.response.status_code == 410
+      assert gone.response.body == "{\"error\":\"gone\"}"
+      dispatch(handler, "GET", "/locked") do |locked|
+        assert locked.response.body == "<p>locked</p>"
+      end
+    end
+  end
+  nil
+end
+
+def router_example_38 : Nil
+  router55 = Router.new("")
+  route_action_86 = Route86.new
+  router55.get("/gone", route_action_86)
+  route_action_87 = Route87.new
+  router55.error(410, route_action_87)
+  route_options_38 = Config.new
+  route_tree_38 = Tree(Int32).new
+  socket_tree_38 = Tree(Int32).new
+  route_handler_38 = RouteHandler.new(route_tree_38, socket_tree_38,
+    route_options_38)
+  route_handler_38.load(router55)
+  routed55 = route_handler_38
+  handler = routed55
+  dispatch(handler, "GET", "/gone") do |made322|
+    assert made322.response.body == ""
+  end
+  nil
+end
+
+def router_example_39 : Nil
+  router56 = Router.new("")
+  namespace_1 = Router.new("")
+  route_action_88 = Route88.new
+  namespace_1.get("/dash", route_action_88)
+  router56.mount("/ns", namespace_1)
+  namespace_2 = Router.new("")
+  namespace_3 = Router.new("")
+  route_action_89 = Route89.new
+  namespace_3.get("/ping", route_action_89)
+  namespace_2.mount("/v1", namespace_3)
+  router56.mount("/api", namespace_2)
+  route_options_39 = Config.new
+  route_tree_39 = Tree(Int32).new
+  socket_tree_39 = Tree(Int32).new
+  route_handler_39 = RouteHandler.new(route_tree_39, socket_tree_39,
+    route_options_39)
+  route_handler_39.load(router56)
+  routed56 = route_handler_39
+  handler = routed56
+  dispatch(handler, "GET", "/ns/dash") do |made323|
+    assert made323.response.body == "dash"
+  end
+  dispatch(handler, "GET", "/api/v1/ping") do |made324|
+    assert made324.response.body == "pong"
+  end
+  nil
+end
+
+def router_example_40 : Nil
+  router57 = Router.new("")
+  mounted = Router.new("")
+  route_action_90 = Route90.new
+  mounted.get("/list", route_action_90)
+  router57.mount "/mounted", mounted
+
+  bare = Router.new("")
+  route_action_91 = Route91.new
+  bare.get("/bare", route_action_91)
+  router57.mount(bare)
+  route_options_40 = Config.new
+  route_tree_40 = Tree(Int32).new
+  socket_tree_40 = Tree(Int32).new
+  route_handler_40 = RouteHandler.new(route_tree_40, socket_tree_40,
+    route_options_40)
+  route_handler_40.load(router57)
+  routed57 = route_handler_40
+  handler = routed57
+  dispatch(handler, "GET", "/mounted/list") do |made325|
+    assert made325.response.body == "listed"
+  end
+  dispatch(handler, "GET", "/bare") do |made326|
+    assert made326.response.body == "bare"
+  end
+  nil
+end
+
+def router_example_41 : Nil
+  router = Router.new("")
+  namespace_4 = Router.new("")
+  namespace_5 = Router.new("")
+  route_action_92 = Route92.new
+  namespace_5.get("/ping", route_action_92)
+  namespace_4.mount("/v1", namespace_5)
+  router.mount("/api", namespace_4)
+  bare = Router.new("")
+  route_action_93 = Route93.new
+  bare.get("/bare", route_action_93)
+  router.mount(bare)
+
+  paths = [] of String
+  text = String::Builder.new
+  router.each_route do |route|
+    at = text.bytesize
+    text.append(route.method)
+    text.append(" ")
+    text.append(route.path)
+    paths << text.finish[at, text.bytesize - at]
+    nil
+  end
+  assert paths.includes?("GET /api/v1/ping")
+  assert paths.includes?("GET /bare")
+  nil
+end
+
+def router_example_42 : Nil
+  assert panics? {
+    router58 = Router.new("")
+    route_action_94 = Route94.new
+    router58.get("/twice", route_action_94)
+    route_action_95 = Route95.new
+    router58.get("/twice/", route_action_95)
+    route_options_41 = Config.new
+    route_tree_41 = Tree(Int32).new
+    socket_tree_41 = Tree(Int32).new
+    route_handler_41 = RouteHandler.new(route_tree_41, socket_tree_41,
+      route_options_41)
+    route_handler_41.load(router58)
+    routed58 = route_handler_41
+    nil
+  }
+  assert panics? {
+    router59 = Router.new("")
+    route_action_96 = Route96.new
+    router59.get("/api/ping", route_action_96)
+    inner = Router.new("")
+    route_action_97 = Route97.new
+    inner.get("/ping", route_action_97)
+    router59.mount("/api", inner)
+    route_options_42 = Config.new
+    route_tree_42 = Tree(Int32).new
+    socket_tree_42 = Tree(Int32).new
+    route_handler_42 = RouteHandler.new(route_tree_42, socket_tree_42,
+      route_options_42)
+    route_handler_42.load(router59)
+    routed59 = route_handler_42
+    nil
+  }
+  nil
+end
+
+def router_example_43 : Nil
+  router60 = Router.new("")
+  route_action_98 = Route98.new
+  router60.get("/about", route_action_98)
+  route_action_99 = Route99.new
+  router60.get("/users/:id/", route_action_99)
+  route_options_43 = Config.new
+  route_tree_43 = Tree(Int32).new
+  socket_tree_43 = Tree(Int32).new
+  route_handler_43 = RouteHandler.new(route_tree_43, socket_tree_43,
+    route_options_43)
+  route_handler_43.load(router60)
+  routed60 = route_handler_43
+  handler = routed60
+  dispatch(handler, "GET", "/about/") do |made327|
+    assert made327.response.body == "about"
+  end
+  dispatch(handler, "GET", "/users/4") do |made328|
+    assert made328.response.body == "user 4"
+  end
+  nil
+end
+
+def run_suite : Nil
+  describe "Router" do
+    describe "HTTP verbs" do
+      it "dispatches GET, POST, PUT, PATCH, DELETE and OPTIONS" do
+        router_example_1
+      end
+
+      it "dispatches QUERY, including a form body" do
+        router_example_2
+      end
+
+      it "rejects a QUERY body without Content-Type" do
+        router_example_3
+      end
     end
 
-    it "mounts at a prefix and at the root" do
-      handler = routes do |r|
-        mounted = Router.new
-        mounted.get "/list" do |env|
-          "listed"
-        end
-        r.mount "/mounted", mounted
-
-        bare = Router.new
-        bare.get "/bare" do |env|
-          "bare"
-        end
-        r.mount(bare)
+    describe "parameters" do
+      it "captures a named url segment" do
+        router_example_4
       end
-      assert dispatch(handler, "GET", "/mounted/list").response.body == "listed"
-      assert dispatch(handler, "GET", "/bare").response.body == "bare"
+
+      it "prefers a static segment over a parameter" do
+        router_example_5
+      end
+
+      it "reads a query string" do
+        router_example_6
+      end
+
+      it "prefers a url param over a query param of the same name" do
+        router_example_7
+      end
+
+      it "captures a glob and an empty glob tail" do
+        router_example_8
+      end
+
+      it "plus-decodes a form body" do
+        router_example_9
+      end
     end
 
-    it "joins nested prefixes in routes()" do
-      router = Router.new
-      router.namespace "/api" do |api|
-        api.namespace "/v1" do |v1|
-          v1.get "/ping" do |env|
-            "pong"
-          end
-        end
+    describe "IntoBody" do
+      it "stringifies Int32, Nil and Bool" do
+        router_example_10
       end
-      bare = Router.new
-      bare.get "/bare" do |env|
-        "bare"
-      end
-      router.mount(bare)
 
-      paths = router.routes.map { |route| route.method + " " + route.path }
-      assert paths.includes?("GET /api/v1/ping")
-      assert paths.includes?("GET /bare")
+      it "keeps a body already written when the handler returns nil" do
+        router_example_11
+      end
     end
 
-    it "refuses a route defined twice, across mounts too" do
-      assert panics? {
-        routes do |r|
-          r.get "/twice" do |env|
-            "one"
-          end
-          r.get "/twice/" do |env|
-            "two"
-          end
-        end
-      }
-      assert panics? {
-        routes do |r|
-          r.get "/api/ping" do |env|
-            "one"
-          end
-          inner = Router.new
-          inner.get "/ping" do |env|
-            "two"
-          end
-          r.mount("/api", inner)
-        end
-      }
+    describe "HEAD" do
+      it "serves GET with an empty body and the would-be Content-Length" do
+        router_example_12
+      end
+
+      it "cannot bypass before_get" do
+        router_example_13
+      end
+
+      it "runs GET before, handler and after filters" do
+        router_example_14
+      end
     end
 
-    it "serves a route with or without a trailing slash" do
-      handler = routes do |r|
-        r.get "/about" do |env|
-          "about"
-        end
-        r.get "/users/:id/" do |env|
-          "user " + env.params.url["id"]
-        end
+    describe "method mismatch" do
+      it "answers 405 with Allow when the path is routed for another verb" do
+        router_example_15
       end
-      assert dispatch(handler, "GET", "/about/").response.body == "about"
-      assert dispatch(handler, "GET", "/users/4").response.body == "user 4"
+
+      it "treats methods as case-sensitive" do
+        router_example_16
+      end
+    end
+
+    describe "filters" do
+      it "halts from before and skips the route" do
+        router_example_17
+      end
+
+      it "scopes a wildcard before to that prefix" do
+        router_example_18
+      end
+
+      it "runs before_get only for GET" do
+        router_example_19
+      end
+
+      it "lets an after filter append to the body" do
+        router_example_20
+      end
+
+      it "stops the before chain at the first halt" do
+        router_example_21
+      end
+
+      it "matches a plain filter path exactly and a /* path by prefix" do
+        router_example_22
+      end
+
+      it "matches :param and *glob segments in a filter path" do
+        router_example_23
+      end
+
+      it "registers one block for a list of paths" do
+        router_example_24
+      end
+
+      it("runs before_all, and only before_all, for a request no " +
+        "route matched") do
+        router_example_25
+      end
+
+      it "lets before_all turn a 404 away first" do
+        router_example_26
+      end
+
+      it "renders the error page for a status a before filter leaves" do
+        router_example_27
+      end
+
+      it "records the matched route" do
+        router_example_28
+      end
+
+      it("answers 400 before the route when a declared JSON body does " +
+        "not parse") do
+        router_example_29
+      end
+    end
+
+    describe "uploads" do
+      it("answers a malformed multipart body with 400 and a breached " +
+        "limit with 413") do
+        router_example_30
+      end
+    end
+
+    describe "halt and redirect" do
+      it "redirects without writing the handler's return value" do
+        router_example_31
+      end
+
+      it "halts without running after filters" do
+        router_example_32
+      end
+
+      it "leaves an already-halted context alone" do
+        router_example_33
+      end
+    end
+
+    describe "error handlers" do
+      it "uses a custom 404 body" do
+        router_example_34
+      end
+
+      it("rewrites the body when the handler sets a status the error " +
+        "table names") do
+        router_example_35
+      end
+
+      it "collects error handlers from a mounted router" do
+        router_example_36
+      end
+
+      it("keeps a page an error handler writes with a helper, in " +
+        "place of the route's body") do
+        router_example_37
+      end
+
+      it("sends an empty page when an error handler answers nil and " +
+        "writes nothing") do
+        router_example_38
+      end
+    end
+
+    describe "namespace and mount" do
+      it "prefixes nested namespaces" do
+        router_example_39
+      end
+
+      it "mounts at a prefix and at the root" do
+        router_example_40
+      end
+
+      it "joins nested prefixes in routes()" do
+        router_example_41
+      end
+
+      it "refuses a route defined twice, across mounts too" do
+        router_example_42
+      end
+
+      it "serves a route with or without a trailing slash" do
+        router_example_43
+      end
     end
   end
 end
+
+run_suite

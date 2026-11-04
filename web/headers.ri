@@ -10,19 +10,48 @@
 # `Location` built from a query string becomes a second, forged header.
 module web/headers
 
-import std/http::{HTTP}
+import std/http::{HTTP, ParsedHead}
+
+private struct HeaderSpan
+  getter start : Int32
+  getter size : Int32
+
+  def initialize(@start : Int32, @size : Int32)
+  end
+end
 
 pub class Headers
-  @pairs : Array(Tuple(String, String))
+  @pairs : Array(Tuple(HeaderSpan, HeaderSpan))
+  # Every name and value the table holds: a stored text is copied here
+  # once, so the table outlives whichever scope wrote it.
+  @text : String::Builder
 
   def initialize
-    @pairs = [] of Tuple(String, String)
+    @pairs = [] of Tuple(HeaderSpan, HeaderSpan)
+    @text = String::Builder.new(256)
+  end
+
+  # *text* copied onto this table's storage: a view that lasts as long as
+  # the table. What belongs to a request and must last as long as its
+  # headers (its path, its query) can be kept here too.
+  pub def keep(text : String) : String
+    read(store(text))
+  end
+
+  private def store(text : String) : HeaderSpan
+    at = @text.bytesize
+    @text.append(text)
+    HeaderSpan.new(at, text.bytesize)
+  end
+
+  private def read(span : HeaderSpan) : String
+    @text.finish[span.start, span.size]
   end
 
   # The fields as they came, name and value, in order: for a layer above
   # that keeps them as they are rather than copying them.
   pub def pairs : Array(Tuple(String, String))
-    @pairs
+    @pairs.map { |pair| {read(pair[0]), read(pair[1])} }
   end
 
   # Names are compared byte by byte, ignoring ASCII case: a lookup makes
@@ -30,7 +59,7 @@ pub class Headers
   pub def []?(name : String) : String?
     found = nil
     @pairs.each do |pair|
-      found = pair[1] if HTTP.same_name?(pair[0], name)
+      found = read(pair[1]) if HTTP.same_name?(read(pair[0]), name)
     end
     found
   end
@@ -41,21 +70,37 @@ pub class Headers
 
   pub def []=(name : String, value : String) : String
     check(name, value)
+    kept = store(value)
+    kept_name = store(name)
     index = 0
     while index < @pairs.size
-      if HTTP.same_name?(@pairs[index][0], name)
-        @pairs[index] = {name, value}
+      if HTTP.same_name?(read(@pairs[index][0]), name)
+        @pairs[index] = {kept_name, kept}
         return value
       end
       index = index + 1
     end
-    @pairs << {name, value}
+    @pairs << {kept_name, kept}
     value
   end
 
   pub def add(name : String, value : String) : Nil
     check(name, value)
-    @pairs << {name, value}
+    @pairs << {store(name), store(value)}
+  end
+
+  # The fields of a parsed head, a repeated name's values joined with ", ".
+  pub def add_fields(head : ParsedHead) : Nil
+    index = 0
+    while index < head.field_count
+      if value = head.field_held(index, @text)
+        name = head.field_name(index)
+        kept = store(value)
+        check(name, value)
+        @pairs << {store(name), kept}
+      end
+      index = index + 1
+    end
   end
 
   pub def has_key?(name : String) : Bool
@@ -63,28 +108,22 @@ pub class Headers
   end
 
   pub def each(& : String, String -> Nil) : Nil
-    @pairs.each { |pair| yield pair[0], pair[1] }
+    @pairs.each { |pair| yield read(pair[0]), read(pair[1]) }
   end
 
-  # On the caller's tape when there is one, as a request's is; the
-  # `String` API beside `write`, so the block leaves the tape here.
   pub def to_s : String
-    text = ""
-    tape do
-      buffer = Str::Builder.new(bytesize)
-      write(buffer)
-      text = buffer.finish.to_heap
-    end
-    text
+    buffer = String::Builder.new(bytesize + 1)
+    write(buffer)
+    buffer.finish
   end
 
   # The header block as it goes on the wire, `Name: value` lines each
   # ending in CRLF, onto *buffer*.
-  pub def write(buffer : Str::Builder) : Nil
+  pub def write(buffer : String::Builder) : Nil
     @pairs.each do |pair|
-      buffer.append(pair[0])
+      buffer.append(read(pair[0]))
       buffer.append(": ")
-      buffer.append(pair[1])
+      buffer.append(read(pair[1]))
       buffer.append("\r\n")
     end
   end
@@ -92,13 +131,13 @@ pub class Headers
   # The fields `write` writes: those that frame a message
   # (`Content-Length`, `Connection`, `Transfer-Encoding`) when *framing*,
   # the others when not.
-  pub def write_framing(buffer : Str::Builder, framing : Bool) : Nil
+  pub def write_framing(buffer : String::Builder, framing : Bool) : Nil
     @pairs.each do |pair|
-      name = pair[0]
+      name = read(pair[0])
       next unless framing == (HTTP.same_name?(name, "Content-Length") || HTTP.same_name?(name, "Connection") || HTTP.same_name?(name, "Transfer-Encoding"))
       buffer.append(name)
       buffer.append(": ")
-      buffer.append(pair[1])
+      buffer.append(read(pair[1]))
       buffer.append("\r\n")
     end
   end
@@ -106,8 +145,12 @@ pub class Headers
   # The size in bytes of what `write` writes.
   pub def bytesize : Int32
     total = 0
-    @pairs.each { |pair| total = total + pair[0].bytesize + pair[1].bytesize + 4 }
+    @pairs.each { |pair| total = total + pair[0].size + pair[1].size + 4 }
     total
+  end
+
+  pub def clear : Nil
+    @pairs.clear
   end
 
   pub def empty? : Bool
@@ -115,17 +158,17 @@ pub class Headers
   end
 
   pub def delete(name : String) : Nil
-    kept = [] of Tuple(String, String)
-    @pairs.each do |pair|
-      kept << pair unless HTTP.same_name?(pair[0], name)
+    index = @pairs.size - 1
+    while index >= 0
+      @pairs.delete_at(index) if HTTP.same_name?(read(@pairs[index][0]), name)
+      index = index - 1
     end
-    @pairs = kept
   end
 
   # RFC 9110 field-name: one or more token characters.
   def self.valid_name?(name : String) : Bool
     return false if name.bytesize == 0
-    bytes = name.as_tape
+    bytes = name
     index = 0
     while index < name.bytesize
       return false unless token_byte?(bytes[index])
@@ -137,7 +180,7 @@ pub class Headers
   # RFC 9110 field-value: visible ASCII, obs-text, space and tab. CR, LF,
   # NUL and the other controls are refused.
   def self.valid_value?(value : String) : Bool
-    bytes = value.as_tape
+    bytes = value
     index = 0
     while index < value.bytesize
       byte = bytes[index]

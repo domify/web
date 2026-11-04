@@ -7,29 +7,11 @@
 # the reader, the way a spec's example name is.
 module web/spec
 
-class Nesting
-  @path : String
-
-  def initialize
-    @path = ""
-  end
-
-  pub def path : String
-    @path
-  end
-
-  pub def path=(value : String) : String
-    @path = value
-  end
-end
-
-NESTING = Nesting.new
-
+# Names document the examples; assertions report their own file and line.
+# Keep the nesting on the call stack, without retaining names globally.
 def around(name : String, & : -> Nil) : Nil
-  previous = NESTING.path
-  NESTING.path = previous.empty? ? name : previous + " " + name
   yield
-  NESTING.path = previous
+  nil
 end
 
 pub def describe(name : String, & : -> Nil) : Nil
@@ -40,6 +22,7 @@ pub def context(name : String, & : -> Nil) : Nil
   around(name) { yield }
 end
 
+# Run each example immediately, borrowing its environment for this call.
 pub def it(name : String, & : -> Nil) : Nil
   around(name) { yield }
 end
