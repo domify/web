@@ -33,3 +33,10 @@ bench/run.sh 5        # requests per second and peak RSS, --release
 
 - Do not add `Co-Authored-By: Claude …`, "Generated with Claude Code" or any
   other AI attribution to commit messages or pull request descriptions.
+
+## Length and commits
+
+* Every dokument line is at most 80 characters: documents, commit
+  messages, help text.
+* No `Co-Authored-By` or other AI attribution lines in commits: most work
+  is done with agents, so the line is noise. A clear subject, a short body.
