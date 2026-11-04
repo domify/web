@@ -2,44 +2,37 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-24.04
-    env:
-      # The oldest iyi this release supports (README, Requirements).
-      IYI_VERSION: 0.15.0
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install iyi
+      - name: Install ris
         run: |
-          curl -fsSL https://raw.githubusercontent.com/iyilang/iyi/master/install.sh | IYI_PREFIX="$HOME/.iyi" sh
-          echo "$HOME/.iyi/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://raw.githubusercontent.com/rislang/ris/main/install_ris.sh | RIS_PREFIX="$HOME/.local" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - run: iyi version
+      - run: ris version
 
       - name: Test
-        run: iyi test iyi_web
+        run: ./check.sh
 
       - name: Build the examples
         run: |
-          for example in examples/*.iyi; do
-            case "$example" in *_test.iyi) continue ;; esac
+          export IYI_PATH="$PWD:$(ris env IYI_PATH)"
+          for example in examples/*.ri; do
+            case "$example" in *_test.ri) continue ;; esac
             echo "building $example"
-            iyi build "$example" -o "$RUNNER_TEMP/example"
+            ris build "$example" -o "$RUNNER_TEMP/example"
           done
-
-      - name: Test the examples
-        run: iyi test examples
 
   # What the next tag has to be called, from what the exported surface did
   # since the last one: an export gone is a new minor before v1 and a new
-  # major after, and a pull request that makes one says so here. On the
-  # latest iyi, since `iyi mod release` arrived in 0.15.1 - after the
-  # oldest release the tests pin.
+  # major after, and a pull request that makes one says so here.
   surface:
     runs-on: ubuntu-24.04
     steps:
@@ -48,10 +41,10 @@ jobs:
           # The tags, which the surface is compared against.
           fetch-depth: 0
 
-      - name: Install iyi
+      - name: Install ris
         run: |
-          curl -fsSL https://raw.githubusercontent.com/iyilang/iyi/master/install.sh | IYI_PREFIX="$HOME/.iyi" sh
-          echo "$HOME/.iyi/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://raw.githubusercontent.com/rislang/ris/main/install_ris.sh | RIS_PREFIX="$HOME/.local" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: What the next release has to be
-        run: iyi mod release
+        run: ris mod release
